@@ -1,0 +1,56 @@
+[project]
+name = "api-wrapper"
+version = "0.0.0"
+description = "backend"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+  "alembic==1.18.4",
+  "asyncpg==0.31.0",
+  "fastapi>=0.135.1",
+  "greenlet>=3.3.2",
+  "httpx>=0.28.1",
+  "loguru>=0.7.3",
+  "markdownify>=0.14.1",
+  "openai>=2.26.0",
+  "pydantic-settings>=2.13.1",
+  "pyjwt>=2.10.0",
+  "sqlalchemy==2.0.48",
+  "uvicorn>=0.41.0",
+]
+
+[dependency-groups]
+dev = [
+  "factory-boy>=3.3.3",
+  "httpx>=0.28.1",
+  "pytest>=9.0.2",
+  "pytest-asyncio>=1.0.0",
+  "respx>=0.22.0",
+  "ruff>=0.14.0,<0.15.0", # 0.15.x formatter strips parens from multi-exception except clauses, producing invalid Python 3
+  "ty>=0.0.21",
+]
+
+[tool.ruff.lint]
+select = [
+  "E", # pycodestyle errors
+  "W", # pycodestyle warnings
+  "F", # pyflakes
+  "I", # isort
+  "B", # flake8-bugbear
+  "C4", # flake8-comprehensions
+  "UP", # pyupgrade
+]
+ignore = [
+  "E501", # line too long, handled by black
+  "B008", # do not perform function calls in argument defaults
+  "C901", # too complex
+  "W191", # indentation contains tabs
+]
+
+[tool.ruff.lint.isort]
+known-third-party = ["fastapi", "pydantic", "starlette"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]
+
