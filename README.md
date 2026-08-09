@@ -104,6 +104,35 @@ Liveness only. Does not yet check the upstream or database (phase 9).
 Note this is deliberately **not** the OpenAI schema — a flat `prompt` in, flat `content`
 out. The contract belongs to this service, not to the vendor.
 
+### Errors
+
+Every failure — ours, the upstream's, or a bad request — comes back in one envelope:
+
+```jsonc
+{
+  "error": {
+    "code": "model_not_found",
+    "message": "model 'gpt-9' not found",
+    "details": { "model": "gpt-9" }   // optional
+  }
+}
+```
+
+Branch on `code`, which is stable. `message` is for humans and may be reworded.
+
+| Status | `code` | Cause |
+| --- | --- | --- |
+| 400 | `model_not_found` | Requested a model the provider doesn't have |
+| 400 | `upstream_rejected_request` | Provider refused the request for another reason |
+| 422 | `validation_error` | Request body failed schema validation; `details.fields` lists them |
+| 429 | `upstream_rate_limited` | Provider throttled us; `Retry-After` echoed when supplied |
+| 500 | `internal_error` | A bug on our side. Traceback goes to the logs, never the response |
+| 502 | `upstream_error` | Provider returned 5xx |
+| 502 | `upstream_auth_failed` | Provider rejected *our* credentials — a caller can't fix this, so not a 401 |
+| 502 | `invalid_upstream_response` | Provider returned a body we couldn't parse |
+| 503 | `upstream_unavailable` | Couldn't reach the provider at all |
+| 504 | `upstream_timeout` | Provider didn't respond in time |
+
 ## Layout
 
 ```
@@ -115,8 +144,8 @@ src/
   models/                Request/response schemas — our public contract
   services/              Upstream calls; the only place httpx and vendor JSON exist
   dependencies/          Depends() providers (settings, http client, services)
+  errors/                Error taxonomy + exception handlers
   repositories/          Database access               (phase 7)
-  errors/                Error taxonomy + handlers     (phase 3)
   middleware/            Cross-cutting per-request work (phase 9)
 tests/
 ```
@@ -130,7 +159,7 @@ service.
 | --- | --- | --- | --- |
 | 1 | Contract | ✅ | Request/response models, generated OpenAPI docs |
 | 2 | Upstream client | ✅ | Lifespan-managed pooled `httpx` client, service layer, split timeouts |
-| 3 | Error taxonomy | ⬜ | `AppError` hierarchy, one exception handler, stable error codes |
+| 3 | Error taxonomy | ✅ | `AppError` hierarchy, one envelope, stable error codes |
 | 4 | Resilience | ⬜ | Retry with exponential backoff + jitter, circuit breaker |
 | 5 | Client auth | ⬜ | Hashed API keys, caller identity via `Depends()` |
 | 6 | Rate limiting | ⬜ | Token bucket per caller, `429` + `Retry-After` |
@@ -140,23 +169,15 @@ service.
 | 10 | Tests | 🟡 | Grows with each phase; upstream mocked with `respx` |
 | 11 | Ship | ⬜ | Dockerfile, compose, deployment notes |
 
-### Known gap (phase 3)
+### Known gap (phase 4)
 
-`services/completion.py` calls `raise_for_status()` with nothing catching it, so **any**
-upstream failure becomes a bare `500 Internal Server Error` with a traceback in the logs.
+Failures are now classified but never *retried*. A single `429` or transient `502` from the
+provider is passed straight to the caller, even though waiting a moment and trying again
+would usually succeed. Timeouts are likewise fatal on the first attempt.
 
-Reproduce it by requesting a model that isn't pulled:
-
-```bash
-curl -X POST http://localhost:8080/v1/complete \
-  -H 'Content-Type: application/json' \
-  -d '{"prompt": "hi", "model": "not-a-real-model"}'
-```
-
-Ollama returns `404 model not found`; the client sees `500`. That should be a `4xx` with a
-usable message — a client mistake is not a server crash. Response parsing is equally
-fragile: an unexpected upstream body makes `data["choices"][0]` raise `KeyError`, which
-also surfaces as a 500.
+Phase 4 adds retry with exponential backoff plus jitter for the retryable codes only
+(`429`, `5xx`, connection errors — never a `400`), a cap on total attempts, and a circuit
+breaker so a provider that is properly down fails fast instead of tying up workers.
 
 ## Notes for the curious
 
@@ -169,3 +190,8 @@ also surfaces as a 500.
   that are hard to provoke live — `429`, timeouts, malformed bodies — become one-liners.
 - **`TestClient` must be used as a context manager**, or lifespan never runs and
   `app.http_client` won't exist.
+- **Status codes carry blame.** A bad model name is the caller's fault (`400`), a rejected
+  API key is ours (`502`, not `401` — the caller cannot fix our credentials), and an
+  unparseable provider response is nobody's fault but still not a `500`.
+- **Upstream error text is forwarded selectively.** A "model not found" message is useful
+  to the caller; an auth message may name our key, so it is dropped.

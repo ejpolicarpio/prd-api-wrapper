@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.configuration import Settings
 from src.endpoints.completion import router as completion_router
 from src.endpoints.health import router as health_router
+from src.errors.handlers import register_error_handlers
 
 
 class Application(FastAPI):
@@ -48,6 +49,8 @@ def create_app(settings: Settings | None = None) -> Application:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    register_error_handlers(_app)
 
     _app.include_router(health_router)
     _app.include_router(completion_router)
