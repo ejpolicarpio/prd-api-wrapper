@@ -7,9 +7,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.configuration import Settings
 from src.repositories.api_keys import ApiKeyRepository, PostgresApiKeyRepository
+from src.repositories.jobs import JobRepository, PostgresJobRepository
 from src.repositories.usage import PostgresUsageRepository, UsageRepository
 from src.services.completion import CompletionService
+from src.services.jobs import JobService
 from src.services.resilience import CircuitBreaker, RetryPolicy
+from src.services.webhooks import WebhookService
 
 
 def get_settings(request: Request) -> Settings:
@@ -69,6 +72,27 @@ RetryPolicyDep = Annotated[RetryPolicy, Depends(get_retry_policy)]
 CircuitBreakerDep = Annotated[CircuitBreaker, Depends(get_circuit_breaker)]
 
 
+def get_job_repository(request: Request) -> JobRepository:
+    # The factory again: a job outlives the request that created it, so the
+    # background task has no request session to borrow.
+    return PostgresJobRepository(request.app.postgresql_async_session)
+
+
+def get_webhook_service(request: Request, settings: SettingsDep) -> WebhookService:
+    return WebhookService(
+        client=request.app.webhook_client,
+        # Its own retry policy: delivering a callback and calling a provider
+        # deserve different patience.
+        retry=request.app.webhook_retry,
+        secret=settings.WEBHOOK_SIGNING_SECRET,
+        timeout_seconds=settings.WEBHOOK_TIMEOUT_SECONDS,
+    )
+
+
+JobRepositoryDep = Annotated[JobRepository, Depends(get_job_repository)]
+WebhookServiceDep = Annotated[WebhookService, Depends(get_webhook_service)]
+
+
 def get_completion_service(
     client: HttpClientDep,
     settings: SettingsDep,
@@ -86,3 +110,14 @@ def get_completion_service(
 
 
 CompletionServiceDep = Annotated[CompletionService, Depends(get_completion_service)]
+
+
+def get_job_service(
+    jobs: JobRepositoryDep,
+    completions: CompletionServiceDep,
+    webhooks: WebhookServiceDep,
+) -> JobService:
+    return JobService(jobs=jobs, completions=completions, webhooks=webhooks)
+
+
+JobServiceDep = Annotated[JobService, Depends(get_job_service)]

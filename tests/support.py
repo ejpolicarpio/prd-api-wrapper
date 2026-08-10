@@ -11,10 +11,15 @@ from collections.abc import Iterable
 from fastapi.testclient import TestClient
 
 from src.configuration import Settings
-from src.dependencies.common import get_api_key_repository, get_usage_repository
+from src.dependencies.common import (
+    get_api_key_repository,
+    get_job_repository,
+    get_usage_repository,
+)
 from src.factory import create_app
 from src.models.caller import ApiKeyRecord
 from src.repositories.api_keys import InMemoryApiKeyRepository
+from src.repositories.jobs import InMemoryJobRepository
 from src.repositories.usage import InMemoryUsageRepository
 
 UPSTREAM_BASE_URL = "http://upstream.test/v1"
@@ -32,6 +37,7 @@ def build_test_client(
     *,
     api_keys: Iterable[ApiKeyRecord] = (),
     usage: InMemoryUsageRepository | None = None,
+    jobs: InMemoryJobRepository | None = None,
     **overrides,
 ) -> TestClient:
     defaults = {
@@ -43,8 +49,10 @@ def build_test_client(
 
     keys_repository = InMemoryApiKeyRepository(api_keys)
     usage_repository = usage or InMemoryUsageRepository()
+    job_repository = jobs or InMemoryJobRepository()
 
     app.dependency_overrides[get_api_key_repository] = lambda: keys_repository
     app.dependency_overrides[get_usage_repository] = lambda: usage_repository
+    app.dependency_overrides[get_job_repository] = lambda: job_repository
 
     return TestClient(app, raise_server_exceptions=False)

@@ -94,6 +94,9 @@ pydantic-settings at startup, so bad config fails on boot rather than on first r
 | `POSTGRESQL_USERNAME` / `_PASSWORD` / `_DB` | `postgres` ×3 | |
 | `POSTGRESQL_SCHEMA` | `public` | Applied as the connection's `search_path` |
 | `POSTGRESQL_ECHO` | `false` | Log every statement — useful once, exhausting always |
+| `WEBHOOK_SIGNING_SECRET` | `""` | Callers verify deliveries with this. Per-caller secrets would be better |
+| `WEBHOOK_TIMEOUT_SECONDS` | `10.0` | Per delivery attempt |
+| `WEBHOOK_MAX_ATTEMPTS` | `4` | Delivery attempts before giving up; the job keeps its result |
 | `RATE_LIMIT_ENABLED` | `true` | |
 | `RATE_LIMIT_REQUESTS_PER_MINUTE` | `60` | Steady rate per caller; the bucket refills at this ÷ 60 per second |
 | `RATE_LIMIT_BURST` | `10` | Bucket capacity: what an idle caller may fire at once |
@@ -134,6 +137,51 @@ Retry-After: 8               (429 only) seconds until one token returns
 ```
 
 Exceeding the limit returns `429 rate_limit_exceeded` without touching the provider.
+
+### `POST /v1/jobs`
+
+For work too slow to wait on. Accepts the same fields as `/v1/complete` plus a
+`callback_url`, and returns immediately:
+
+```jsonc
+// request
+{ "prompt": "Say hello.", "callback_url": "https://you.example.com/hooks" }
+
+// 202 Accepted
+{ "id": "264e4c2f751a8c99fbf777194f8a8657", "status": "pending" }
+```
+
+When the work finishes, we `POST` the result to `callback_url`:
+
+```jsonc
+// headers
+X-Signature-Timestamp: 1754835600
+X-Signature: sha256=a1b2c3…
+
+// body
+{
+  "job_id": "264e4c2f…",
+  "status": "succeeded",       // or "failed"
+  "model": "llama3.2:3b",
+  "content": "Hello!",
+  "error_code": null,
+  "error_message": null
+}
+```
+
+**Verify before parsing.** The signature is `HMAC-SHA256(secret, "<timestamp>.<raw body>")`.
+Recompute it over the raw bytes and compare with a constant-time function — re-serialising
+the JSON can reorder keys and break the digest. Because the timestamp is *inside* the
+signed material, rejecting old timestamps also rejects replays.
+
+`job_id` is the idempotency key: delivery is retried, so the same one may arrive twice.
+
+### `GET /v1/jobs/{id}`
+
+The job's current state, including `content` once it's done. Scoped to the caller who
+created it — someone else's job id returns `404`, identical to one that never existed.
+
+Poll this when a delivery is missed: a failed callback never loses the result.
 
 ### `GET /health`
 
@@ -206,11 +254,13 @@ src/
   endpoints/             Routers — thin; parse, delegate, return
   models/                Every data structure: API contract, tables, value objects
     base.py              Declarative base; table names derived from class names
-    tables.py            api_key and usage
+    tables.py            api_key, usage and job
   services/              Upstream calls; the only place httpx and vendor JSON exist
     resilience.py        Retry policy + circuit breaker (provider-agnostic)
     authentication.py    Key -> caller, plus minting; runnable as a script
     rate_limiter.py      Token bucket, one per caller
+    jobs.py              Accept work, run it, deliver the result
+    webhooks.py          Signing and delivery; sign()/verify() live here
   dependencies/          Depends() providers (settings, http client, services)
   errors/                Error taxonomy + exception handlers
   databases/             Engine and session factory
@@ -238,7 +288,7 @@ Two rules keep this honest:
 | 5 | Client auth | ✅ | Hashed API keys, caller identity via `Depends()` |
 | 6 | Rate limiting | ✅ | Token bucket per caller, `429` + `Retry-After` + `X-RateLimit-*` |
 | 7 | Persistence | ✅ | Postgres via SQLAlchemy async + alembic: keys, usage |
-| 8 | Webhooks | ⬜ | `202` + background work + HMAC-signed callback with retries |
+| 8 | Webhooks | ✅ | `202` + background work + HMAC-signed callback with retries |
 | 9 | Observability | ⬜ | Request IDs, structured logs, readiness checks |
 | 10 | Tests | 🟡 | Grows with each phase; upstream mocked with `respx` |
 | 11 | Ship | ⬜ | Dockerfile, compose, deployment notes |
@@ -288,17 +338,21 @@ because sharing the request's would mean a failed request rolls its own usage ro
 losing exactly the records worth having: an outage is when you most want to know who was
 calling.
 
-### Known gap (phase 8)
+### Known gap (phase 9)
 
-Every request holds a connection for its full duration, which for a slow model is tens of
-seconds. That does not scale and it is fragile — a dropped connection loses the result.
+Three limits worth knowing, all of the same shape — state that lives in one process:
 
-Phase 8 accepts the work with `202` and an id, does it in the background, and delivers the
-result to a callback URL with an HMAC signature and retries.
+- **Background jobs are in-process.** `BackgroundTasks` runs them on the serving worker's
+  event loop, so a restart loses anything in flight. The `job` row already holds everything
+  a real queue worker would need (prompt, model, callback URL, status), so moving to arq or
+  Celery is mostly relocating `JobService.run`.
+- **Rate limit buckets are per process**, so N workers enforce N times the limit.
+- **One webhook signing secret for everyone.** Per-caller secrets would mean one leak
+  compromises one client rather than all of them.
 
-Rate limit buckets also still live in process memory, so several workers enforce several
-times the intended limit. Now that Postgres is here, moving them is a smaller job than it
-was.
+Also missing, and phase 9's actual subject: a request ID threaded through the logs. Right
+now a failure cannot be traced from the client's report back to the log lines that explain
+it — and with background work, the interesting log lines happen after the response.
 
 ## Notes for the curious
 
@@ -337,3 +391,9 @@ was.
 - **Integration tests use their own database** (`<db>_test`, created on demand). They drop
   every table on setup, so pointing them at the development database would delete real
   data — the isolation is enforced in `conftest`, not left to whoever runs the command.
+- **Callbacks go out on a separate httpx client.** The upstream client carries the
+  provider's `Authorization` header by default, and the callback URL is chosen by the
+  caller — reusing it would hand them our provider key. There is a test for that.
+- **A webhook is not a persistent connection.** Each delivery is a fresh, short-lived
+  HTTP request in which *we* are the client and the caller is the server. That is why a
+  publicly reachable URL is required, and why streaming tokens would be SSE instead.

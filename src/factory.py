@@ -10,6 +10,7 @@ from src.configuration import Settings
 from src.databases.session import create_database_engine, create_session_factory
 from src.endpoints.completion import router as completion_router
 from src.endpoints.health import router as health_router
+from src.endpoints.jobs import router as jobs_router
 from src.errors.handlers import register_error_handlers
 from src.services.rate_limiter import InMemoryRateLimiter, RateLimiter
 from src.services.resilience import CircuitBreaker, RetryPolicy
@@ -22,6 +23,8 @@ class Application(FastAPI):
     circuit_breaker: CircuitBreaker
     rate_limiter: RateLimiter
     postgresql_async_session: async_sessionmaker[AsyncSession]
+    webhook_client: httpx.AsyncClient
+    webhook_retry: RetryPolicy
 
 
 def lifespan_provider(settings: Settings) -> Callable:
@@ -58,6 +61,21 @@ def lifespan_provider(settings: Settings) -> Callable:
             refill_rate=settings.RATE_LIMIT_REQUESTS_PER_MINUTE / 60,
         )
 
+        # A separate client for callbacks, deliberately: the upstream one
+        # carries the provider's Authorization header, and sending that to a
+        # URL the caller chose would hand them our key.
+        app.webhook_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(settings.WEBHOOK_TIMEOUT_SECONDS, connect=5.0),
+            follow_redirects=False,
+        )
+
+        app.webhook_retry = RetryPolicy(
+            max_attempts=settings.WEBHOOK_MAX_ATTEMPTS,
+            initial_backoff=settings.RETRY_INITIAL_BACKOFF_SECONDS,
+            max_backoff=settings.RETRY_MAX_BACKOFF_SECONDS,
+            budget=settings.RETRY_BUDGET_SECONDS,
+        )
+
         # The engine owns the connection pool, so it is built once here; the
         # factory it produces hands out one short-lived session per request.
         engine = create_database_engine(settings)
@@ -66,6 +84,7 @@ def lifespan_provider(settings: Settings) -> Callable:
         yield
 
         await app.http_client.aclose()
+        await app.webhook_client.aclose()
         await engine.dispose()
 
     return lifespan
@@ -89,5 +108,6 @@ def create_app(settings: Settings | None = None) -> Application:
 
     _app.include_router(health_router)
     _app.include_router(completion_router)
+    _app.include_router(jobs_router)
 
     return _app

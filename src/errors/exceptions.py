@@ -141,6 +141,27 @@ class UpstreamAuthFailed(AppError):
     message = "The provider rejected our credentials."
 
 
+class WebhookDeliveryFailed(AppError):
+    """Never reaches a client: by the time we deliver, their request is long
+    finished. It exists so the retry policy can classify delivery attempts."""
+
+    status_code = 502
+    code = "webhook_delivery_failed"
+    message = "The callback could not be delivered."
+
+    def __init__(self, message: str | None = None, *, retryable: bool = True, **kwargs):
+        super().__init__(message, **kwargs)
+        # Per-instance, unlike the others: whether a delivery is worth
+        # repeating depends on the receiver's status code, not on the class.
+        self.retryable = retryable
+
+
+class JobNotFound(AppError):
+    status_code = 404
+    code = "job_not_found"
+    message = "No such job."
+
+
 class InvalidUpstreamResponse(AppError):
     status_code = 502
     code = "invalid_upstream_response"

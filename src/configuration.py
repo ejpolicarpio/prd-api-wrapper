@@ -52,6 +52,14 @@ class Settings(BaseSettings):
     # through. Set REQUIRE_API_KEY=false for local poking around.
     REQUIRE_API_KEY: bool = True
 
+    # Webhooks
+    # ========================================================
+    # Callers verify deliveries with this. Per-caller secrets would be better
+    # -- one leak would then compromise one client, not all of them.
+    WEBHOOK_SIGNING_SECRET: str = ""
+    WEBHOOK_TIMEOUT_SECONDS: float = 10.0
+    WEBHOOK_MAX_ATTEMPTS: int = 4
+
     # Rate limiting
     # ========================================================
     RATE_LIMIT_ENABLED: bool = True
