@@ -7,7 +7,8 @@ from src.errors.exceptions import (
     UpstreamError,
     UpstreamRateLimited,
 )
-from src.services.resilience import CircuitBreaker, CircuitState, RetryPolicy
+from src.models.resilience import CircuitState
+from src.services.resilience import CircuitBreaker, RetryPolicy
 
 
 class FakeClock:

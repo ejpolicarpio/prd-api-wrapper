@@ -2,11 +2,11 @@ import asyncio
 import random
 import time
 from collections.abc import Awaitable, Callable
-from enum import StrEnum
 
 from loguru import logger
 
 from src.errors.exceptions import AppError, UpstreamCircuitOpen
+from src.models.resilience import CircuitState
 
 
 class RetryPolicy:
@@ -78,12 +78,6 @@ class RetryPolicy:
                     delay,
                 )
                 await self._sleep(delay)
-
-
-class CircuitState(StrEnum):
-    CLOSED = "closed"  # everything through
-    OPEN = "open"  # provider is down; fail immediately
-    HALF_OPEN = "half_open"  # let a trial request decide
 
 
 class CircuitBreaker:
