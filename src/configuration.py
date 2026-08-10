@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     REQUIRE_API_KEY: bool = True
     API_KEYS: list[ApiKeyRecord] = []
 
+    # Rate limiting
+    # ========================================================
+    RATE_LIMIT_ENABLED: bool = True
+    RATE_LIMIT_REQUESTS_PER_MINUTE: int = 60
+    # Burst is the bucket's capacity: how many requests a caller who has been
+    # idle may fire at once before the steady rate applies.
+    RATE_LIMIT_BURST: int = 10
+
     # Resilience
     # ========================================================
     RETRY_MAX_ATTEMPTS: int = 3

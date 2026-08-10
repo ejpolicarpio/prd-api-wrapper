@@ -87,6 +87,13 @@ class UpstreamRejectedRequest(AppError):
     message = "The provider rejected the request."
 
 
+class RateLimitExceeded(AppError):
+    # Ours, not the provider's: the caller has spent their own allowance.
+    status_code = 429
+    code = "rate_limit_exceeded"
+    message = "Rate limit exceeded. Slow down."
+
+
 class UpstreamRateLimited(AppError):
     status_code = 429
     code = "upstream_rate_limited"

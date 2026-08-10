@@ -10,6 +10,7 @@ from src.endpoints.completion import router as completion_router
 from src.endpoints.health import router as health_router
 from src.errors.handlers import register_error_handlers
 from src.repositories.api_keys import ApiKeyRepository, SettingsApiKeyRepository
+from src.services.rate_limiter import InMemoryRateLimiter, RateLimiter
 from src.services.resilience import CircuitBreaker, RetryPolicy
 
 
@@ -19,6 +20,7 @@ class Application(FastAPI):
     retry_policy: RetryPolicy
     circuit_breaker: CircuitBreaker
     api_key_repository: ApiKeyRepository
+    rate_limiter: RateLimiter
 
 
 def lifespan_provider(settings: Settings) -> Callable:
@@ -51,6 +53,13 @@ def lifespan_provider(settings: Settings) -> Callable:
         # Swapped for a Postgres-backed repository in phase 7; the dependency
         # that consumes it will not need to change.
         app.api_key_repository = SettingsApiKeyRepository(settings.API_KEYS)
+
+        # Shared for the same reason as the breaker: a per-request limiter
+        # would hand every request a full bucket.
+        app.rate_limiter = InMemoryRateLimiter(
+            capacity=settings.RATE_LIMIT_BURST,
+            refill_rate=settings.RATE_LIMIT_REQUESTS_PER_MINUTE / 60,
+        )
 
         yield
 

@@ -86,6 +86,9 @@ pydantic-settings at startup, so bad config fails on boot rather than on first r
 | `UPSTREAM_MODEL` | `llama3.2:3b` | Default when the request omits `model` |
 | `REQUIRE_API_KEY` | `true` | Fails closed. `false` lets unauthenticated callers through as `anonymous` |
 | `API_KEYS` | `[]` | JSON list of `{id, name, key_hash}`; use `just new-api-key` |
+| `RATE_LIMIT_ENABLED` | `true` | |
+| `RATE_LIMIT_REQUESTS_PER_MINUTE` | `60` | Steady rate per caller; the bucket refills at this ÷ 60 per second |
+| `RATE_LIMIT_BURST` | `10` | Bucket capacity: what an idle caller may fire at once |
 | `UPSTREAM_TIMEOUT_SECONDS` | `60.0` | Read timeout — models are legitimately slow |
 | `UPSTREAM_CONNECT_TIMEOUT_SECONDS` | `2.0` | Connect timeout — unreachable should fail fast |
 | `RETRY_MAX_ATTEMPTS` | `3` | Total attempts, not extra ones. `1` disables retrying |
@@ -109,6 +112,20 @@ Keys are stored only as a SHA-256 digest, so the plaintext exists exactly once �
 time. A leaked `.env` or database dump yields nothing usable. Plain SHA-256 suffices here
 because keys are long random strings; a *password*, being low-entropy, would need a
 deliberately slow hash like argon2.
+
+### Rate limits
+
+Each caller gets a token bucket keyed on their key's identity. Every response — success or
+failure — reports where they stand:
+
+```
+X-RateLimit-Limit: 10        bucket capacity
+X-RateLimit-Remaining: 7     tokens left
+X-RateLimit-Reset: 28        seconds until the bucket is full again
+Retry-After: 8               (429 only) seconds until one token returns
+```
+
+Exceeding the limit returns `429 rate_limit_exceeded` without touching the provider.
 
 ### `GET /health`
 
@@ -161,6 +178,7 @@ Branch on `code`, which is stable. `message` is for humans and may be reworded.
 | 400 | `model_not_found` | Requested a model the provider doesn't have |
 | 400 | `upstream_rejected_request` | Provider refused the request for another reason |
 | 422 | `validation_error` | Request body failed schema validation; `details.fields` lists them |
+| 429 | `rate_limit_exceeded` | The caller spent their own allowance |
 | 429 | `upstream_rate_limited` | Provider throttled us; `Retry-After` echoed when supplied |
 | 500 | `internal_error` | A bug on our side. Traceback goes to the logs, never the response |
 | 502 | `upstream_error` | Provider returned 5xx |
@@ -178,10 +196,11 @@ src/
   factory.py             create_app() + lifespan (owns the shared httpx client)
   runserver.py           Production entrypoint
   endpoints/             Routers — thin; parse, delegate, return
-  models/                Request/response schemas — our public contract
+  models/                Every data structure: API contract, records, value objects
   services/              Upstream calls; the only place httpx and vendor JSON exist
     resilience.py        Retry policy + circuit breaker (provider-agnostic)
     authentication.py    Key -> caller, plus minting; runnable as a script
+    rate_limiter.py      Token bucket, one per caller
   dependencies/          Depends() providers (settings, http client, services)
   errors/                Error taxonomy + exception handlers
   repositories/          Where records are looked up; settings-backed until phase 7
@@ -189,8 +208,12 @@ src/
 tests/
 ```
 
-The rule that keeps this honest: **endpoints stay ~3 lines**. Anything more belongs in a
-service.
+Two rules keep this honest:
+
+- **Endpoints stay ~3 lines.** Anything more belongs in a service.
+- **Data structures live in `models/`, behaviour lives in `services/`.** That holds whether
+  or not the type crosses a boundary — `RateLimitDecision` and `CircuitState` are internal,
+  but they're still data, so they sit with the rest of it. One rule, nothing to remember.
 
 ## Roadmap
 
@@ -201,7 +224,7 @@ service.
 | 3 | Error taxonomy | ✅ | `AppError` hierarchy, one envelope, stable error codes |
 | 4 | Resilience | ✅ | Retry with exponential backoff + jitter, budget, circuit breaker |
 | 5 | Client auth | ✅ | Hashed API keys, caller identity via `Depends()` |
-| 6 | Rate limiting | ⬜ | Token bucket per caller, `429` + `Retry-After` |
+| 6 | Rate limiting | ✅ | Token bucket per caller, `429` + `Retry-After` + `X-RateLimit-*` |
 | 7 | Persistence | ⬜ | Postgres via SQLAlchemy async + alembic: keys, usage, jobs |
 | 8 | Webhooks | ⬜ | `202` + background work + HMAC-signed callback with retries |
 | 9 | Observability | ⬜ | Request IDs, structured logs, readiness checks |
@@ -236,12 +259,23 @@ A `Depends()` is opt-in per route, appears in `/docs` as an Authorize button, an
 a value the endpoint can use. Middleware is for work that genuinely applies to every
 request — request IDs, timing — which is phase 9.
 
-### Known gap (phase 6)
+### Why a token bucket, not a counter per minute
 
-Requests are now attributed to a caller, but nothing limits what a caller may spend. One
-client with a valid key can exhaust the provider quota for everyone. Phase 6 adds a token
-bucket keyed on `Caller.id`, returning `429` with `Retry-After` and `X-RateLimit-*`
-headers.
+A fixed window ("60 requests per minute") lets a caller fire all 60 at 11:59:59 and 60 more
+at 12:00:00 — 120 requests in two seconds, at a limit you believed was 60 a minute. A token
+bucket has no window to straddle: tokens accrue continuously at the steady rate, capped at
+the burst size, so idling buys a burst but never an unbounded backlog.
+
+### Known gap (phase 7)
+
+Two pieces of state that matter live only in memory. Rate limit buckets are per process, so
+running four uvicorn workers enforces four times the intended limit; and the bucket dict
+grows with every caller seen, with nothing evicting it. API keys have the same shape of
+problem: revoking one means editing `.env` and restarting.
+
+Phase 7 moves keys, usage and (optionally) buckets into Postgres or Redis. Both
+`RateLimiter` and `ApiKeyRepository` are already `Protocol`s with `async` methods for
+exactly this swap.
 
 ## Notes for the curious
 
@@ -269,3 +303,8 @@ headers.
 - **`ApiKeyRepository` is a `Protocol` and its method is `async`** even though the
   settings-backed implementation does no I/O. Phase 7 swaps in a Postgres one without
   anything that depends on it changing.
+- **The rate limiter depends on the caller**, which is what orders it after
+  authentication — FastAPI resolves the graph, so there is no ordering to remember.
+- **An exception discards the `Response` a dependency wrote to.** Headers that must
+  survive a failure (rate limit counts, since the token was spent regardless) are stashed
+  on `request.state` and merged back in by the error handler.

@@ -9,6 +9,15 @@ from loguru import logger
 from src.errors.exceptions import AppError, ValidationFailed
 
 
+def collected_headers(request: Request) -> dict[str, str]:
+    """Headers a dependency asked us to send whatever the outcome.
+
+    An exception discards the Response object dependencies write to, so
+    anything that must survive a failure is stashed on request.state instead.
+    """
+    return getattr(request.state, "response_headers", {})
+
+
 async def app_error_handler(request: Request, exc: Exception) -> JSONResponse:
     error = cast(AppError, exc)
 
@@ -23,7 +32,7 @@ async def app_error_handler(request: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(
         status_code=error.status_code,
         content=error.to_payload(),
-        headers=error.headers or None,
+        headers=collected_headers(request) | error.headers or None,
     )
 
 
@@ -48,7 +57,11 @@ async def unhandled_error_handler(request: Request, exc: Exception) -> JSONRespo
 
     generic = AppError()
 
-    return JSONResponse(status_code=generic.status_code, content=generic.to_payload())
+    return JSONResponse(
+        status_code=generic.status_code,
+        content=generic.to_payload(),
+        headers=collected_headers(request) or None,
+    )
 
 
 def register_error_handlers(app: FastAPI) -> None:
