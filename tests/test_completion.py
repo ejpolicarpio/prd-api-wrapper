@@ -5,22 +5,14 @@ import pytest
 import respx
 from fastapi.testclient import TestClient
 
-from src.configuration import Settings
-from src.factory import create_app
-
-UPSTREAM_BASE_URL = "http://upstream.test/v1"
+from tests.support import UPSTREAM_BASE_URL, build_test_client
 
 
 @pytest.fixture
 def client():
-    settings = Settings(
-        UPSTREAM_BASE_URL=UPSTREAM_BASE_URL,
-        UPSTREAM_MODEL="test-model",
-        # Authentication has its own suite; these tests are about the contract.
-        REQUIRE_API_KEY=False,
-    )
+    # Authentication has its own suite; these tests are about the contract.
     # The `with` block matters: it runs lifespan, which builds the http client.
-    with TestClient(create_app(settings)) as test_client:
+    with build_test_client(REQUIRE_API_KEY=False) as test_client:
         yield test_client
 
 

@@ -3,13 +3,15 @@
 Run as a script to mint one: just new-api-key "Some client"
 """
 
-import json
+import asyncio
 import secrets
 import sys
 
+from src.configuration import Settings
+from src.databases.session import create_database_engine, create_session_factory
 from src.errors.exceptions import InvalidCredentials, MissingCredentials
 from src.models.caller import ApiKeyRecord, Caller, hash_api_key
-from src.repositories.api_keys import ApiKeyRepository
+from src.repositories.api_keys import ApiKeyRepository, PostgresApiKeyRepository
 
 ANONYMOUS = Caller(id="anonymous", name="anonymous")
 
@@ -60,13 +62,31 @@ def mint_key(name: str) -> tuple[str, ApiKeyRecord]:
     return key, record
 
 
-def main() -> None:
-    key, record = mint_key(" ".join(sys.argv[1:]) or "unnamed")
+async def issue_key(name: str) -> str:
+    """Mint a key, store its digest, and hand back the plaintext once."""
+    settings = Settings()
+    engine = create_database_engine(settings)
+    session_factory = create_session_factory(engine)
 
+    key, record = mint_key(name)
+
+    try:
+        async with session_factory() as session:
+            await PostgresApiKeyRepository(session).add(record)
+            await session.commit()
+    finally:
+        await engine.dispose()
+
+    return key
+
+
+def main() -> None:
+    name = " ".join(sys.argv[1:]) or "unnamed"
+    key = asyncio.run(issue_key(name))
+
+    print(f"\nStored a key for {name!r}.")
     print("Give this to the client -- it cannot be recovered later:\n")
     print(f"  {key}\n")
-    print("Add this to API_KEYS in your .env:\n")
-    print(f"  API_KEYS='{json.dumps([record.model_dump()])}'\n")
 
 
 if __name__ == "__main__":

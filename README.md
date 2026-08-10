@@ -29,10 +29,12 @@ brew services start ollama
 ollama pull llama3.2:3b
 
 just install
+just up-system-dependencies   # postgres, via docker
+just migrate
 ```
 
-The service **fails closed**: with no API keys configured, every request is refused. Mint
-one and put it in `.env` (which is gitignored):
+The service **fails closed**: with no keys in the database, every request is refused. Mint
+one — it's printed once and only its digest is stored:
 
 ```bash
 just new-api-key "Local dev"
@@ -63,7 +65,10 @@ Interactive docs at <http://localhost:8080/docs>.
 | --- | --- |
 | `just install` | Sync dependencies into `.venv` |
 | `just dev` | Run the API on `$PORT` (default 8080) |
-| `just test` | Run pytest (upstream is mocked; Ollama not required) |
+| `just test` | Fast suite — no docker, no Ollama, upstream and database both faked |
+| `just test-integration` | Repository tests against real Postgres (starts it first) |
+| `just check-test` | Both suites |
+| `just makemigration "msg"` | Autogenerate a migration from the models |
 | `just codestyle` | Auto-fix with ruff |
 | `just check-codestyle` | ruff lint + format check + `ty` type check |
 | `just kill 8080` | Kill whatever holds a port |
@@ -85,7 +90,10 @@ pydantic-settings at startup, so bad config fails on boot rather than on first r
 | `UPSTREAM_API_KEY` | `ollama` | Ignored by Ollama; real key for hosted providers |
 | `UPSTREAM_MODEL` | `llama3.2:3b` | Default when the request omits `model` |
 | `REQUIRE_API_KEY` | `true` | Fails closed. `false` lets unauthenticated callers through as `anonymous` |
-| `API_KEYS` | `[]` | JSON list of `{id, name, key_hash}`; use `just new-api-key` |
+| `POSTGRESQL_HOST` / `_PORT` | `localhost` / `5432` | |
+| `POSTGRESQL_USERNAME` / `_PASSWORD` / `_DB` | `postgres` ×3 | |
+| `POSTGRESQL_SCHEMA` | `public` | Applied as the connection's `search_path` |
+| `POSTGRESQL_ECHO` | `false` | Log every statement — useful once, exhausting always |
 | `RATE_LIMIT_ENABLED` | `true` | |
 | `RATE_LIMIT_REQUESTS_PER_MINUTE` | `60` | Steady rate per caller; the bucket refills at this ÷ 60 per second |
 | `RATE_LIMIT_BURST` | `10` | Bucket capacity: what an idle caller may fire at once |
@@ -196,14 +204,18 @@ src/
   factory.py             create_app() + lifespan (owns the shared httpx client)
   runserver.py           Production entrypoint
   endpoints/             Routers — thin; parse, delegate, return
-  models/                Every data structure: API contract, records, value objects
+  models/                Every data structure: API contract, tables, value objects
+    base.py              Declarative base; table names derived from class names
+    tables.py            api_key and usage
   services/              Upstream calls; the only place httpx and vendor JSON exist
     resilience.py        Retry policy + circuit breaker (provider-agnostic)
     authentication.py    Key -> caller, plus minting; runnable as a script
     rate_limiter.py      Token bucket, one per caller
   dependencies/          Depends() providers (settings, http client, services)
   errors/                Error taxonomy + exception handlers
-  repositories/          Where records are looked up; settings-backed until phase 7
+  databases/             Engine and session factory
+  repositories/          Where rows are read and written, behind Protocols
+migrations/              Alembic; the URL comes from Settings, not alembic.ini
   middleware/            Cross-cutting per-request work (phase 9)
 tests/
 ```
@@ -225,7 +237,7 @@ Two rules keep this honest:
 | 4 | Resilience | ✅ | Retry with exponential backoff + jitter, budget, circuit breaker |
 | 5 | Client auth | ✅ | Hashed API keys, caller identity via `Depends()` |
 | 6 | Rate limiting | ✅ | Token bucket per caller, `429` + `Retry-After` + `X-RateLimit-*` |
-| 7 | Persistence | ⬜ | Postgres via SQLAlchemy async + alembic: keys, usage, jobs |
+| 7 | Persistence | ✅ | Postgres via SQLAlchemy async + alembic: keys, usage |
 | 8 | Webhooks | ⬜ | `202` + background work + HMAC-signed callback with retries |
 | 9 | Observability | ⬜ | Request IDs, structured logs, readiness checks |
 | 10 | Tests | 🟡 | Grows with each phase; upstream mocked with `respx` |
@@ -266,16 +278,27 @@ at 12:00:00 — 120 requests in two seconds, at a limit you believed was 60 a mi
 bucket has no window to straddle: tokens accrue continuously at the steady rate, capped at
 the burst size, so idling buys a burst but never an unbounded backlog.
 
-### Known gap (phase 7)
+### Transactions
 
-Two pieces of state that matter live only in memory. Rate limit buckets are per process, so
-running four uvicorn workers enforces four times the intended limit; and the bucket dict
-grows with every caller seen, with nothing evicting it. API keys have the same shape of
-problem: revoking one means editing `.env` and restarting.
+One session per request, committed if the handler returns and rolled back if it raises —
+so a half-finished write cannot survive a failure.
 
-Phase 7 moves keys, usage and (optionally) buckets into Postgres or Redis. Both
-`RateLimiter` and `ApiKeyRepository` are already `Protocol`s with `async` methods for
-exactly this swap.
+Usage recording is the deliberate exception. It opens its **own** short transaction,
+because sharing the request's would mean a failed request rolls its own usage row away,
+losing exactly the records worth having: an outage is when you most want to know who was
+calling.
+
+### Known gap (phase 8)
+
+Every request holds a connection for its full duration, which for a slow model is tens of
+seconds. That does not scale and it is fragile — a dropped connection loses the result.
+
+Phase 8 accepts the work with `202` and an id, does it in the background, and delivers the
+result to a callback URL with an HMAC signature and retries.
+
+Rate limit buckets also still live in process memory, so several workers enforce several
+times the intended limit. Now that Postgres is here, moving them is a smaller job than it
+was.
 
 ## Notes for the curious
 
@@ -308,3 +331,9 @@ exactly this swap.
 - **An exception discards the `Response` a dependency wrote to.** Headers that must
   survive a failure (rate limit counts, since the token was spent regardless) are stashed
   on `request.state` and merged back in by the error handler.
+- **The fast suite fakes the repositories, not the database.** `dependency_overrides`
+  swaps in in-memory repositories, so routing, auth, rate limiting, retries and error
+  mapping all run exactly as in production without a session ever being opened.
+- **Integration tests use their own database** (`<db>_test`, created on demand). They drop
+  every table on setup, so pointing them at the development database would delete real
+  data — the isolation is enforced in `conftest`, not left to whoever runs the command.

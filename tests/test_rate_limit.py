@@ -3,23 +3,12 @@ import pytest
 import respx
 from fastapi.testclient import TestClient
 
-from src.configuration import Settings
-from src.factory import create_app
 from src.models.caller import ApiKeyRecord, hash_api_key
 from src.services.rate_limiter import InMemoryRateLimiter, TokenBucket
-
-UPSTREAM_BASE_URL = "http://upstream.test/v1"
-UPSTREAM_ROUTE = f"{UPSTREAM_BASE_URL}/chat/completions"
+from tests.support import OK_BODY, UPSTREAM_ROUTE, build_test_client
 
 KEY_A = "sk-client-a"
 KEY_B = "sk-client-b"
-
-OK_BODY = {
-    "id": "chatcmpl-1",
-    "model": "test-model",
-    "choices": [{"message": {"content": "hello"}}],
-    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
-}
 
 
 class FakeClock:
@@ -106,20 +95,15 @@ async def test_each_caller_gets_their_own_bucket() -> None:
 
 
 def build_client(**overrides) -> TestClient:
-    defaults = {
-        "UPSTREAM_BASE_URL": UPSTREAM_BASE_URL,
-        "UPSTREAM_MODEL": "test-model",
-        "RETRY_MAX_ATTEMPTS": 1,
-        "RATE_LIMIT_BURST": 2,
-        "RATE_LIMIT_REQUESTS_PER_MINUTE": 60,
-        "API_KEYS": [
+    return build_test_client(
+        RETRY_MAX_ATTEMPTS=1,
+        RATE_LIMIT_BURST=2,
+        RATE_LIMIT_REQUESTS_PER_MINUTE=60,
+        api_keys=[
             ApiKeyRecord(id="a", name="Client A", key_hash=hash_api_key(KEY_A)),
             ApiKeyRecord(id="b", name="Client B", key_hash=hash_api_key(KEY_B)),
         ],
-    }
-
-    return TestClient(
-        create_app(Settings(**(defaults | overrides))), raise_server_exceptions=False
+        **overrides,
     )
 
 

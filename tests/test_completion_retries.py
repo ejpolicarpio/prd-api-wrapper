@@ -3,35 +3,20 @@ import pytest
 import respx
 from fastapi.testclient import TestClient
 
-from src.configuration import Settings
-from src.factory import create_app
-
-UPSTREAM_BASE_URL = "http://upstream.test/v1"
-UPSTREAM_ROUTE = f"{UPSTREAM_BASE_URL}/chat/completions"
-
-OK_BODY = {
-    "id": "chatcmpl-1",
-    "model": "test-model",
-    "choices": [{"message": {"content": "hello"}}],
-    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
-}
+from tests.support import OK_BODY, UPSTREAM_ROUTE, build_test_client
 
 
 def build_client(**overrides) -> TestClient:
     # Zero backoff keeps the suite fast; the delay arithmetic itself is covered
     # by unit tests in test_resilience.py.
     defaults = {
-        "UPSTREAM_BASE_URL": UPSTREAM_BASE_URL,
-        "UPSTREAM_MODEL": "test-model",
         "RETRY_INITIAL_BACKOFF_SECONDS": 0.0,
         "RETRY_MAX_ATTEMPTS": 3,
         "CIRCUIT_BREAKER_FAILURE_THRESHOLD": 100,
         "REQUIRE_API_KEY": False,
     }
 
-    return TestClient(
-        create_app(Settings(**(defaults | overrides))), raise_server_exceptions=False
-    )
+    return build_test_client(**(defaults | overrides))
 
 
 @pytest.fixture

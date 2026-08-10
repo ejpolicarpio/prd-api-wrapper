@@ -4,12 +4,13 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.configuration import Settings
+from src.databases.session import create_database_engine, create_session_factory
 from src.endpoints.completion import router as completion_router
 from src.endpoints.health import router as health_router
 from src.errors.handlers import register_error_handlers
-from src.repositories.api_keys import ApiKeyRepository, SettingsApiKeyRepository
 from src.services.rate_limiter import InMemoryRateLimiter, RateLimiter
 from src.services.resilience import CircuitBreaker, RetryPolicy
 
@@ -19,8 +20,8 @@ class Application(FastAPI):
     http_client: httpx.AsyncClient
     retry_policy: RetryPolicy
     circuit_breaker: CircuitBreaker
-    api_key_repository: ApiKeyRepository
     rate_limiter: RateLimiter
+    postgresql_async_session: async_sessionmaker[AsyncSession]
 
 
 def lifespan_provider(settings: Settings) -> Callable:
@@ -50,10 +51,6 @@ def lifespan_provider(settings: Settings) -> Callable:
             reset_timeout=settings.CIRCUIT_BREAKER_RESET_SECONDS,
         )
 
-        # Swapped for a Postgres-backed repository in phase 7; the dependency
-        # that consumes it will not need to change.
-        app.api_key_repository = SettingsApiKeyRepository(settings.API_KEYS)
-
         # Shared for the same reason as the breaker: a per-request limiter
         # would hand every request a full bucket.
         app.rate_limiter = InMemoryRateLimiter(
@@ -61,9 +58,15 @@ def lifespan_provider(settings: Settings) -> Callable:
             refill_rate=settings.RATE_LIMIT_REQUESTS_PER_MINUTE / 60,
         )
 
+        # The engine owns the connection pool, so it is built once here; the
+        # factory it produces hands out one short-lived session per request.
+        engine = create_database_engine(settings)
+        app.postgresql_async_session = create_session_factory(engine)
+
         yield
 
         await app.http_client.aclose()
+        await engine.dispose()
 
     return lifespan
 

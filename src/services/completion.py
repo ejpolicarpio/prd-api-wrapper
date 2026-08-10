@@ -1,4 +1,7 @@
+import time
+
 import httpx
+from loguru import logger
 from pydantic import ValidationError
 
 from src.configuration import Settings
@@ -13,11 +16,14 @@ from src.errors.exceptions import (
     UpstreamTimeout,
     UpstreamUnavailable,
 )
+from src.models.caller import Caller
 from src.models.completion import (
     CompletionRequest,
     CompletionResponse,
     CompletionUsage,
 )
+from src.models.usage import UsageEntry
+from src.repositories.usage import UsageRepository
 from src.services.resilience import CircuitBreaker, RetryPolicy
 
 
@@ -35,13 +41,17 @@ class CompletionService:
         settings: Settings,
         retry: RetryPolicy,
         breaker: CircuitBreaker,
+        usage: UsageRepository,
     ) -> None:
         self._client = client
         self._settings = settings
         self._retry = retry
         self._breaker = breaker
+        self._usage = usage
 
-    async def complete(self, request: CompletionRequest) -> CompletionResponse:
+    async def complete(
+        self, request: CompletionRequest, caller: Caller
+    ) -> CompletionResponse:
         model = request.model or self._settings.UPSTREAM_MODEL
 
         payload: dict = {
@@ -52,7 +62,41 @@ class CompletionService:
         if request.max_tokens is not None:
             payload["max_tokens"] = request.max_tokens
 
-        return await self._retry.run(lambda: self._guarded_call(payload, model))
+        started = time.monotonic()
+
+        try:
+            response = await self._retry.run(lambda: self._guarded_call(payload, model))
+        except AppError as error:
+            await self._record(caller, model, error.status_code, started)
+            raise
+
+        await self._record(caller, model, 200, started, response.usage)
+
+        return response
+
+    async def _record(
+        self,
+        caller: Caller,
+        model: str,
+        status_code: int,
+        started: float,
+        usage: CompletionUsage | None = None,
+    ) -> None:
+        """Best effort: a caller who got their completion should not be handed
+        a 500 because our analytics write failed."""
+        entry = UsageEntry(
+            api_key_id=caller.id,
+            model=model,
+            status_code=status_code,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            prompt_tokens=usage.prompt_tokens if usage else 0,
+            completion_tokens=usage.completion_tokens if usage else 0,
+        )
+
+        try:
+            await self._usage.record(entry)
+        except Exception:
+            logger.opt(exception=True).error("usage not recorded for {}", caller.id)
 
     async def _guarded_call(self, payload: dict, model: str) -> CompletionResponse:
         """One attempt, with the circuit breaker watching the outcome."""

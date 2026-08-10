@@ -3,38 +3,20 @@ import pytest
 import respx
 from fastapi.testclient import TestClient
 
-from src.configuration import Settings
-from src.factory import create_app
 from src.models.caller import ApiKeyRecord, hash_api_key
 from src.services.authentication import mint_key
-
-UPSTREAM_BASE_URL = "http://upstream.test/v1"
-UPSTREAM_ROUTE = f"{UPSTREAM_BASE_URL}/chat/completions"
+from tests.support import OK_BODY, UPSTREAM_ROUTE, build_test_client
 
 VALID_KEY = "sk-test-key"
 OTHER_KEY = "sk-not-registered"
 
-OK_BODY = {
-    "id": "chatcmpl-1",
-    "model": "test-model",
-    "choices": [{"message": {"content": "hello"}}],
-    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
-}
+REGISTERED = ApiKeyRecord(id="k1", name="Test client", key_hash=hash_api_key(VALID_KEY))
 
 
 def build_client(**overrides) -> TestClient:
-    defaults = {
-        "UPSTREAM_BASE_URL": UPSTREAM_BASE_URL,
-        "UPSTREAM_MODEL": "test-model",
-        "RETRY_MAX_ATTEMPTS": 1,
-        "API_KEYS": [
-            ApiKeyRecord(id="k1", name="Test client", key_hash=hash_api_key(VALID_KEY))
-        ],
-    }
+    overrides.setdefault("api_keys", [REGISTERED])
 
-    return TestClient(
-        create_app(Settings(**(defaults | overrides))), raise_server_exceptions=False
-    )
+    return build_test_client(RETRY_MAX_ATTEMPTS=1, **overrides)
 
 
 @pytest.fixture
@@ -127,7 +109,7 @@ def test_a_key_is_still_checked_when_auth_is_optional() -> None:
 
 
 def test_fails_closed_when_no_keys_are_configured() -> None:
-    with build_client(API_KEYS=[]) as client:
+    with build_client(api_keys=[]) as client:
         assert complete(client, VALID_KEY).status_code == 401
 
 
@@ -149,7 +131,7 @@ def test_minted_keys_are_unique_and_stored_only_as_a_digest() -> None:
 def test_a_minted_key_actually_works() -> None:
     key, record = mint_key("Fresh client")
 
-    with build_client(API_KEYS=[record]) as client:
+    with build_client(api_keys=[record]) as client:
         respx.post(UPSTREAM_ROUTE).mock(return_value=httpx.Response(200, json=OK_BODY))
 
         assert complete(client, key).status_code == 200

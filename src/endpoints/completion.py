@@ -18,4 +18,4 @@ async def complete(
     service: CompletionServiceDep,
     caller: CallerDep,
 ) -> CompletionResponse:
-    return await service.complete(payload)
+    return await service.complete(payload, caller)

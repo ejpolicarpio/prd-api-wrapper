@@ -1,11 +1,10 @@
 from typing import Annotated
 
-from fastapi import Depends, Request
+from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from src.dependencies.common import SettingsDep
+from src.dependencies.common import ApiKeyRepositoryDep, SettingsDep
 from src.models.caller import Caller
-from src.repositories.api_keys import ApiKeyRepository
 from src.services.authentication import AuthenticationService
 
 # auto_error=False: we raise our own errors so 401s use our envelope rather
@@ -13,13 +12,6 @@ from src.services.authentication import AuthenticationService
 bearer_scheme = HTTPBearer(auto_error=False, description="Your API key")
 
 BearerDep = Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)]
-
-
-def get_api_key_repository(request: Request) -> ApiKeyRepository:
-    return request.app.api_key_repository
-
-
-ApiKeyRepositoryDep = Annotated[ApiKeyRepository, Depends(get_api_key_repository)]
 
 
 def get_authentication_service(

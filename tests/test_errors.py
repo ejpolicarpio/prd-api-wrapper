@@ -3,26 +3,14 @@ import pytest
 import respx
 from fastapi.testclient import TestClient
 
-from src.configuration import Settings
-from src.factory import create_app
-
-UPSTREAM_BASE_URL = "http://upstream.test/v1"
-UPSTREAM_ROUTE = f"{UPSTREAM_BASE_URL}/chat/completions"
+from tests.support import UPSTREAM_ROUTE, build_test_client
 
 
 @pytest.fixture
 def client():
-    settings = Settings(
-        UPSTREAM_BASE_URL=UPSTREAM_BASE_URL,
-        UPSTREAM_MODEL="test-model",
-        # These tests are about mapping a failure onto our contract, not about
-        # repeating it -- retries are covered in test_completion_retries.py.
-        RETRY_MAX_ATTEMPTS=1,
-        REQUIRE_API_KEY=False,
-    )
-    # raise_server_exceptions=False so the catch-all handler's 500 is returned
-    # to us instead of the exception being re-raised into the test.
-    with TestClient(create_app(settings), raise_server_exceptions=False) as test_client:
+    # These tests are about mapping a failure onto our contract, not about
+    # repeating it -- retries are covered in test_completion_retries.py.
+    with build_test_client(RETRY_MAX_ATTEMPTS=1, REQUIRE_API_KEY=False) as test_client:
         yield test_client
 
 
