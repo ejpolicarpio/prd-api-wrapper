@@ -84,6 +84,8 @@ pydantic-settings at startup, so bad config fails on boot rather than on first r
 | Variable | Default | Notes |
 | --- | --- | --- |
 | `ENVIRONMENT` | `production` | `local` / `development` enable uvicorn reload |
+| `LOG_LEVEL` | `INFO` | |
+| `LOG_JSON` | unset | Defaults to JSON unless `ENVIRONMENT=local` |
 | `HOST` / `PORT` | `0.0.0.0` / `8080` | |
 | `DEBUG` | `false` | |
 | `UPSTREAM_BASE_URL` | `http://localhost:11434/v1` | Any OpenAI-compatible base URL |
@@ -183,10 +185,21 @@ created it — someone else's job id returns `404`, identical to one that never 
 
 Poll this when a delivery is missed: a failed callback never loses the result.
 
-### `GET /health`
+### `GET /health` and `GET /health/ready`
 
-Liveness only, and deliberately unauthenticated — a probe has no credentials to offer.
-Does not yet check the upstream or database (phase 9).
+Both unauthenticated — a probe has no credentials to offer.
+
+`/health` is **liveness**: is the process running? It deliberately checks nothing else. A
+liveness probe that fails when the database is down gets the process killed and restarted,
+which does not fix a database and does turn a partial outage into a total one.
+
+`/health/ready` is **readiness**: should this process be sent traffic? It checks Postgres
+and the provider, and answers `503` if either is unreachable — taking the instance out of
+rotation without killing it, so it rejoins when they recover.
+
+```jsonc
+{ "status": "ready", "checks": { "database": true, "upstream": true } }
+```
 
 ### `POST /v1/complete`
 
@@ -225,7 +238,9 @@ Every failure — ours, the upstream's, or a bad request — comes back in one e
 }
 ```
 
-Branch on `code`, which is stable. `message` is for humans and may be reworded.
+Branch on `code`, which is stable. `message` is for humans and may be reworded. Errors also
+carry `request_id`, which is the string to quote when reporting a problem — it finds every
+log line for that request, including work that happened after the response.
 
 | Status | `code` | Cause |
 | --- | --- | --- |
@@ -263,6 +278,8 @@ src/
     webhooks.py          Signing and delivery; sign()/verify() live here
   dependencies/          Depends() providers (settings, http client, services)
   errors/                Error taxonomy + exception handlers
+  middleware/            Request ids and per-request log lines
+  logs.py                Loguru configuration: JSON in production, readable locally
   databases/             Engine and session factory
   repositories/          Where rows are read and written, behind Protocols
 migrations/              Alembic; the URL comes from Settings, not alembic.ini
@@ -289,7 +306,7 @@ Two rules keep this honest:
 | 6 | Rate limiting | ✅ | Token bucket per caller, `429` + `Retry-After` + `X-RateLimit-*` |
 | 7 | Persistence | ✅ | Postgres via SQLAlchemy async + alembic: keys, usage |
 | 8 | Webhooks | ✅ | `202` + background work + HMAC-signed callback with retries |
-| 9 | Observability | ⬜ | Request IDs, structured logs, readiness checks |
+| 9 | Observability | ✅ | Request IDs through to background work, structured logs, readiness |
 | 10 | Tests | 🟡 | Grows with each phase; upstream mocked with `respx` |
 | 11 | Ship | ⬜ | Dockerfile, compose, deployment notes |
 
@@ -338,7 +355,23 @@ because sharing the request's would mean a failed request rolls its own usage ro
 losing exactly the records worth having: an outage is when you most want to know who was
 calling.
 
-### Known gap (phase 9)
+### Tracing a request
+
+Every request gets an id — taken from an inbound `X-Request-ID` when it looks safe,
+generated otherwise — returned in the response header, included in error bodies, and bound
+into every log line that request produces:
+
+```
+$ grep trace-abc123 logs
+… POST /v1/jobs -> 202 in 37.66ms          {'request_id': 'trace-abc123'}
+… webhook delivered for job 00043414…      {'request_id': 'trace-abc123', 'job_id': '00043414…'}
+```
+
+Note the second line happened 2.3 seconds *after* the response was sent. Background work
+takes the id explicitly, because it runs outside the middleware's logging context — without
+that, the most interesting lines would be the ones nothing links back to a request.
+
+### Known gap (phase 10 and 11)
 
 Three limits worth knowing, all of the same shape — state that lives in one process:
 
@@ -350,9 +383,8 @@ Three limits worth knowing, all of the same shape — state that lives in one pr
 - **One webhook signing secret for everyone.** Per-caller secrets would mean one leak
   compromises one client rather than all of them.
 
-Also missing, and phase 9's actual subject: a request ID threaded through the logs. Right
-now a failure cannot be traced from the client's report back to the log lines that explain
-it — and with background work, the interesting log lines happen after the response.
+What remains is packaging: a Dockerfile, compose wiring for the app itself, and deployment
+notes (phase 11).
 
 ## Notes for the curious
 
@@ -397,3 +429,13 @@ it — and with background work, the interesting log lines happen after the resp
 - **A webhook is not a persistent connection.** Each delivery is a fresh, short-lived
   HTTP request in which *we* are the client and the caller is the server. That is why a
   publicly reachable URL is required, and why streaming tokens would be SSE instead.
+- **Request ids are middleware, not a dependency**, so they also cover requests that never
+  reach a route — 404s, malformed bodies, unhandled crashes — which are precisely the ones
+  someone will later ask you to explain.
+- **An inbound `X-Request-ID` is validated, not trusted.** It is echoed into headers and
+  log lines, so an arbitrary string could forge log entries or inject headers.
+- **Logging never expands local variables** (`diagnose=False`). Loguru's rich tracebacks
+  are wonderful and would happily print an API key or a prompt into your log aggregator.
+- **The app refuses to start in production without `WEBHOOK_SIGNING_SECRET`.** An empty
+  secret still produces a signature, so deliveries would look signed while being forgeable.
+  Better a failed deploy than a silent vulnerability.

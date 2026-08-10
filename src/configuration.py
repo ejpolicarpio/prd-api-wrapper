@@ -19,6 +19,20 @@ class Settings(BaseSettings):
     PORT: int = 8080
     DEBUG: bool = False
 
+    # Observability
+    # ========================================================
+    LOG_LEVEL: str = "INFO"
+    # None means "JSON unless running locally": machines parse production logs,
+    # humans read local ones.
+    LOG_JSON: bool | None = None
+
+    @property
+    def log_as_json(self) -> bool:
+        if self.LOG_JSON is not None:
+            return self.LOG_JSON
+
+        return self.ENVIRONMENT is not EnvironmentEnum.LOCAL
+
     # Upstream LLM provider (OpenAI-compatible; Ollama by default)
     # ========================================================
     UPSTREAM_BASE_URL: str = "http://localhost:11434/v1"

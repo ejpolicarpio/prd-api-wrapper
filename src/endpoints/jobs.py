@@ -1,4 +1,4 @@
-from fastapi import APIRouter, BackgroundTasks, status
+from fastapi import APIRouter, BackgroundTasks, Request, status
 
 from src.dependencies.auth import CallerDep
 from src.dependencies.common import JobServiceDep, SettingsDep
@@ -15,6 +15,7 @@ router = APIRouter(prefix="/v1/jobs", tags=["jobs"])
     dependencies=[RateLimitDep],
 )
 async def submit(
+    request: Request,
     payload: JobRequest,
     caller: CallerDep,
     service: JobServiceDep,
@@ -26,8 +27,15 @@ async def submit(
     )
 
     # Queued after the response is sent, so the caller waits for a write, not
-    # for a model.
-    background.add_task(service.run, accepted.id, payload, caller)
+    # for a model. The request id travels with it so the work stays traceable
+    # back to the call that asked for it.
+    background.add_task(
+        service.run,
+        accepted.id,
+        payload,
+        caller,
+        getattr(request.state, "request_id", None),
+    )
 
     return accepted
 

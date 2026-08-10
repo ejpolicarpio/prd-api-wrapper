@@ -32,10 +32,14 @@ class AppError(Exception):
         self.retry_after = retry_after
         super().__init__(self.message)
 
-    def to_payload(self) -> dict[str, Any]:
+    def to_payload(self, request_id: str | None = None) -> dict[str, Any]:
         error: dict[str, Any] = {"code": self.code, "message": self.message}
         if self.details:
             error["details"] = self.details
+        # So a caller reporting a failure hands over the one string that finds
+        # every log line for it.
+        if request_id:
+            error["request_id"] = request_id
 
         return {"error": error}
 

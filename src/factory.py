@@ -6,12 +6,14 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from src.configuration import Settings
+from src.configuration import EnvironmentEnum, Settings
 from src.databases.session import create_database_engine, create_session_factory
 from src.endpoints.completion import router as completion_router
 from src.endpoints.health import router as health_router
 from src.endpoints.jobs import router as jobs_router
 from src.errors.handlers import register_error_handlers
+from src.logs import configure_logging
+from src.middleware.request_id import RequestIdMiddleware
 from src.services.rate_limiter import InMemoryRateLimiter, RateLimiter
 from src.services.resilience import CircuitBreaker, RetryPolicy
 
@@ -90,11 +92,34 @@ def lifespan_provider(settings: Settings) -> Callable:
     return lifespan
 
 
+def check_production_settings(settings: Settings) -> None:
+    """Refuse to start misconfigured rather than start insecure.
+
+    An empty signing secret still produces a signature, so deliveries would
+    look signed while being forgeable by anyone. Failing at boot makes that a
+    deploy failure instead of a silent vulnerability.
+    """
+    if settings.ENVIRONMENT is not EnvironmentEnum.PRODUCTION:
+        return
+
+    if not settings.WEBHOOK_SIGNING_SECRET:
+        raise ValueError(
+            "WEBHOOK_SIGNING_SECRET must be set outside local development."
+        )
+
+
 def create_app(settings: Settings | None = None) -> Application:
     _settings = settings or Settings()
 
+    configure_logging(_settings)
+    check_production_settings(_settings)
+
     _app = Application(debug=_settings.DEBUG, lifespan=lifespan_provider(_settings))
     _app.settings = _settings
+
+    # Added first so it wraps everything else: middleware runs outermost-first,
+    # and an id is only useful if it covers the layers that can fail.
+    _app.add_middleware(RequestIdMiddleware)
 
     _app.add_middleware(
         CORSMiddleware,

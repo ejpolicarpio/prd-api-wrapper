@@ -9,6 +9,10 @@ from loguru import logger
 from src.errors.exceptions import AppError, ValidationFailed
 
 
+def request_id_of(request: Request) -> str | None:
+    return getattr(request.state, "request_id", None)
+
+
 def collected_headers(request: Request) -> dict[str, str]:
     """Headers a dependency asked us to send whatever the outcome.
 
@@ -31,7 +35,7 @@ async def app_error_handler(request: Request, exc: Exception) -> JSONResponse:
 
     return JSONResponse(
         status_code=error.status_code,
-        content=error.to_payload(),
+        content=error.to_payload(request_id_of(request)),
         headers=collected_headers(request) | error.headers or None,
     )
 
@@ -42,7 +46,10 @@ async def validation_error_handler(request: Request, exc: Exception) -> JSONResp
 
     failure = ValidationFailed(details={"fields": jsonable_encoder(invalid.errors())})
 
-    return JSONResponse(status_code=failure.status_code, content=failure.to_payload())
+    return JSONResponse(
+        status_code=failure.status_code,
+        content=failure.to_payload(request_id_of(request)),
+    )
 
 
 async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
@@ -59,7 +66,7 @@ async def unhandled_error_handler(request: Request, exc: Exception) -> JSONRespo
 
     return JSONResponse(
         status_code=generic.status_code,
-        content=generic.to_payload(),
+        content=generic.to_payload(request_id_of(request)),
         headers=collected_headers(request) or None,
     )
 

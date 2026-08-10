@@ -60,14 +60,27 @@ class JobService:
 
         return view
 
-    async def run(self, job_id: str, request: JobRequest, caller: Caller) -> None:
+    async def run(
+        self,
+        job_id: str,
+        request: JobRequest,
+        caller: Caller,
+        request_id: str | None = None,
+    ) -> None:
         """The background half. Nothing here may raise: there is no client
-        left to receive an error, only a job row to record it in."""
-        await self._jobs.update(job_id, status=JobStatus.RUNNING)
+        left to receive an error, only a job row to record it in.
 
-        payload = await self._execute(job_id, request, caller)
+        The request id is passed explicitly because this runs after the
+        response, outside the middleware's logging context -- without it, the
+        most interesting log lines would be the ones nothing links back to the
+        request that caused them.
+        """
+        with logger.contextualize(request_id=request_id, job_id=job_id):
+            await self._jobs.update(job_id, status=JobStatus.RUNNING)
 
-        await self._deliver(job_id, str(request.callback_url), payload)
+            payload = await self._execute(job_id, request, caller)
+
+            await self._deliver(job_id, str(request.callback_url), payload)
 
     async def _execute(
         self, job_id: str, request: JobRequest, caller: Caller

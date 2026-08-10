@@ -43,6 +43,12 @@ def build_test_client(
     defaults = {
         "UPSTREAM_BASE_URL": UPSTREAM_BASE_URL,
         "UPSTREAM_MODEL": "test-model",
+        # Tests are local: production refuses to start without a signing
+        # secret, which is the behaviour under test in test_observability.
+        "ENVIRONMENT": "local",
+        # Silence the stdout sink. Per-sink levels mean a test that adds its
+        # own sink still receives everything.
+        "LOG_LEVEL": "CRITICAL",
     }
 
     app = create_app(Settings(**(defaults | overrides)))

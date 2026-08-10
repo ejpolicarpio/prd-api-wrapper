@@ -73,6 +73,9 @@ def test_an_unknown_key_looks_the_same_as_a_malformed_one(client: TestClient) ->
     unknown = complete(client, OTHER_KEY).json()["error"]
     malformed = complete(client, "not-even-a-key-shape").json()["error"]
 
+    # request_id differs by construction and says nothing about the key, so it
+    # is the one field allowed to vary between the two.
+    assert unknown.pop("request_id") != malformed.pop("request_id")
     assert unknown == malformed
 
 
