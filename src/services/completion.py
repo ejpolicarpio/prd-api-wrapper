@@ -18,6 +18,7 @@ from src.models.completion import (
     CompletionResponse,
     CompletionUsage,
 )
+from src.services.resilience import CircuitBreaker, RetryPolicy
 
 
 class CompletionService:
@@ -28,9 +29,17 @@ class CompletionService:
     providers (or add retries, caching, metering) without touching the routes.
     """
 
-    def __init__(self, client: httpx.AsyncClient, settings: Settings) -> None:
+    def __init__(
+        self,
+        client: httpx.AsyncClient,
+        settings: Settings,
+        retry: RetryPolicy,
+        breaker: CircuitBreaker,
+    ) -> None:
         self._client = client
         self._settings = settings
+        self._retry = retry
+        self._breaker = breaker
 
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
         model = request.model or self._settings.UPSTREAM_MODEL
@@ -43,6 +52,26 @@ class CompletionService:
         if request.max_tokens is not None:
             payload["max_tokens"] = request.max_tokens
 
+        return await self._retry.run(lambda: self._guarded_call(payload, model))
+
+    async def _guarded_call(self, payload: dict, model: str) -> CompletionResponse:
+        """One attempt, with the circuit breaker watching the outcome."""
+        self._breaker.before_call()
+
+        try:
+            result = await self._call_upstream(payload, model)
+        except AppError as error:
+            # Only infrastructure failures say anything about the provider's
+            # health. A rejected prompt is our caller's problem, not theirs.
+            if error.retryable:
+                self._breaker.record_failure()
+            raise
+
+        self._breaker.record_success()
+
+        return result
+
+    async def _call_upstream(self, payload: dict, model: str) -> CompletionResponse:
         try:
             response = await self._client.post("/chat/completions", json=payload)
         except httpx.TimeoutException as exc:
@@ -81,6 +110,7 @@ class CompletionService:
             return UpstreamRateLimited(
                 headers={"Retry-After": retry_after} if retry_after else None,
                 details=details,
+                retry_after=cls._retry_after_seconds(retry_after),
             )
 
         if status in (401, 403):
@@ -91,6 +121,17 @@ class CompletionService:
             return UpstreamRejectedRequest(upstream_message, details=details)
 
         return UpstreamError(details=details)
+
+    @staticmethod
+    def _retry_after_seconds(header: str | None) -> float | None:
+        """Parse Retry-After's delay-seconds form; ignore its HTTP-date form."""
+        if header is None:
+            return None
+
+        try:
+            return max(float(header), 0.0)
+        except ValueError:
+            return None
 
     @staticmethod
     def _upstream_message(response: httpx.Response) -> str | None:

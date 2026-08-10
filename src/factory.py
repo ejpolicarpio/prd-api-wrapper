@@ -9,11 +9,14 @@ from src.configuration import Settings
 from src.endpoints.completion import router as completion_router
 from src.endpoints.health import router as health_router
 from src.errors.handlers import register_error_handlers
+from src.services.resilience import CircuitBreaker, RetryPolicy
 
 
 class Application(FastAPI):
     settings: Settings
     http_client: httpx.AsyncClient
+    retry_policy: RetryPolicy
+    circuit_breaker: CircuitBreaker
 
 
 def lifespan_provider(settings: Settings) -> Callable:
@@ -27,6 +30,20 @@ def lifespan_provider(settings: Settings) -> Callable:
                 settings.UPSTREAM_TIMEOUT_SECONDS,
                 connect=settings.UPSTREAM_CONNECT_TIMEOUT_SECONDS,
             ),
+        )
+
+        app.retry_policy = RetryPolicy(
+            max_attempts=settings.RETRY_MAX_ATTEMPTS,
+            initial_backoff=settings.RETRY_INITIAL_BACKOFF_SECONDS,
+            max_backoff=settings.RETRY_MAX_BACKOFF_SECONDS,
+            budget=settings.RETRY_BUDGET_SECONDS,
+        )
+
+        # Shared deliberately: the breaker only works if every request sees the
+        # same failure count.
+        app.circuit_breaker = CircuitBreaker(
+            failure_threshold=settings.CIRCUIT_BREAKER_FAILURE_THRESHOLD,
+            reset_timeout=settings.CIRCUIT_BREAKER_RESET_SECONDS,
         )
 
         yield

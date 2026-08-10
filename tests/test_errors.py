@@ -15,6 +15,9 @@ def client():
     settings = Settings(
         UPSTREAM_BASE_URL=UPSTREAM_BASE_URL,
         UPSTREAM_MODEL="test-model",
+        # These tests are about mapping a failure onto our contract, not about
+        # repeating it -- retries are covered in test_completion_retries.py.
+        RETRY_MAX_ATTEMPTS=1,
     )
     # raise_server_exceptions=False so the catch-all handler's 500 is returned
     # to us instead of the exception being re-raised into the test.

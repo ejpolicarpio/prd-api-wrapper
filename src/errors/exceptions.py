@@ -14,16 +14,22 @@ class AppError(Exception):
     code: str = "internal_error"
     message: str = "Something went wrong on our side."
 
+    #: Whether repeating the identical request could plausibly succeed.
+    #: This is what drives the retry policy -- see services/resilience.py.
+    retryable: bool = False
+
     def __init__(
         self,
         message: str | None = None,
         *,
         details: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
+        retry_after: float | None = None,
     ) -> None:
         self.message = message or type(self).message
         self.details = details or {}
         self.headers = headers or {}
+        self.retry_after = retry_after
         super().__init__(self.message)
 
     def to_payload(self) -> dict[str, Any]:
@@ -60,6 +66,7 @@ class UpstreamRateLimited(AppError):
     status_code = 429
     code = "upstream_rate_limited"
     message = "Rate limited by the provider. Retry shortly."
+    retryable = True
 
 
 # Our problem, not the caller's
@@ -70,18 +77,28 @@ class UpstreamError(AppError):
     status_code = 502
     code = "upstream_error"
     message = "The provider returned an unexpected error."
+    retryable = True
 
 
 class UpstreamUnavailable(AppError):
     status_code = 503
     code = "upstream_unavailable"
     message = "The provider could not be reached."
+    retryable = True
 
 
 class UpstreamTimeout(AppError):
     status_code = 504
     code = "upstream_timeout"
     message = "The provider did not respond in time."
+    retryable = True
+
+
+class UpstreamCircuitOpen(AppError):
+    # Not retryable: the breaker exists precisely to stop us trying.
+    status_code = 503
+    code = "upstream_circuit_open"
+    message = "The provider is failing; calls are paused. Retry shortly."
 
 
 class UpstreamAuthFailed(AppError):

@@ -74,6 +74,12 @@ pydantic-settings at startup, so bad config fails on boot rather than on first r
 | `UPSTREAM_MODEL` | `llama3.2:3b` | Default when the request omits `model` |
 | `UPSTREAM_TIMEOUT_SECONDS` | `60.0` | Read timeout — models are legitimately slow |
 | `UPSTREAM_CONNECT_TIMEOUT_SECONDS` | `2.0` | Connect timeout — unreachable should fail fast |
+| `RETRY_MAX_ATTEMPTS` | `3` | Total attempts, not extra ones. `1` disables retrying |
+| `RETRY_INITIAL_BACKOFF_SECONDS` | `0.5` | First backoff; doubles each attempt |
+| `RETRY_MAX_BACKOFF_SECONDS` | `8.0` | Ceiling for any single wait, `Retry-After` included |
+| `RETRY_BUDGET_SECONDS` | `30.0` | Total wall-clock allowance; a wait that would exceed it is not taken |
+| `CIRCUIT_BREAKER_FAILURE_THRESHOLD` | `5` | Consecutive infrastructure failures before the circuit opens |
+| `CIRCUIT_BREAKER_RESET_SECONDS` | `30.0` | How long it stays open before a probe request |
 
 ## API
 
@@ -131,6 +137,7 @@ Branch on `code`, which is stable. `message` is for humans and may be reworded.
 | 502 | `upstream_auth_failed` | Provider rejected *our* credentials — a caller can't fix this, so not a 401 |
 | 502 | `invalid_upstream_response` | Provider returned a body we couldn't parse |
 | 503 | `upstream_unavailable` | Couldn't reach the provider at all |
+| 503 | `upstream_circuit_open` | Provider is failing consistently; calls are paused |
 | 504 | `upstream_timeout` | Provider didn't respond in time |
 
 ## Layout
@@ -143,6 +150,7 @@ src/
   endpoints/             Routers — thin; parse, delegate, return
   models/                Request/response schemas — our public contract
   services/              Upstream calls; the only place httpx and vendor JSON exist
+    resilience.py        Retry policy + circuit breaker (provider-agnostic)
   dependencies/          Depends() providers (settings, http client, services)
   errors/                Error taxonomy + exception handlers
   repositories/          Database access               (phase 7)
@@ -160,7 +168,7 @@ service.
 | 1 | Contract | ✅ | Request/response models, generated OpenAPI docs |
 | 2 | Upstream client | ✅ | Lifespan-managed pooled `httpx` client, service layer, split timeouts |
 | 3 | Error taxonomy | ✅ | `AppError` hierarchy, one envelope, stable error codes |
-| 4 | Resilience | ⬜ | Retry with exponential backoff + jitter, circuit breaker |
+| 4 | Resilience | ✅ | Retry with exponential backoff + jitter, budget, circuit breaker |
 | 5 | Client auth | ⬜ | Hashed API keys, caller identity via `Depends()` |
 | 6 | Rate limiting | ⬜ | Token bucket per caller, `429` + `Retry-After` |
 | 7 | Persistence | ⬜ | Postgres via SQLAlchemy async + alembic: keys, usage, jobs |
@@ -169,15 +177,29 @@ service.
 | 10 | Tests | 🟡 | Grows with each phase; upstream mocked with `respx` |
 | 11 | Ship | ⬜ | Dockerfile, compose, deployment notes |
 
-### Known gap (phase 4)
+### How retrying decides
 
-Failures are now classified but never *retried*. A single `429` or transient `502` from the
-provider is passed straight to the caller, even though waiting a moment and trying again
-would usually succeed. Timeouts are likewise fatal on the first attempt.
+`AppError.retryable` is the whole policy. A failure that could plausibly succeed on a
+repeat (`429`, `5xx`, timeouts, connection errors) sets it; one that will fail identically
+forever (`400`, `404 model_not_found`, `422`) does not. The retry loop reads that flag and
+nothing else, so extending the taxonomy extends the policy for free.
 
-Phase 4 adds retry with exponential backoff plus jitter for the retryable codes only
-(`429`, `5xx`, connection errors — never a `400`), a cap on total attempts, and a circuit
-breaker so a provider that is properly down fails fast instead of tying up workers.
+Waits are exponential with **full jitter** — a uniform pick from `[0, cap]` rather than the
+cap itself. Without jitter, every client that failed at the same instant retries at the
+same instant and flattens a recovering provider again. A provider's own `Retry-After` beats
+our guess when present, but is still capped.
+
+The circuit breaker counts only retryable failures, since a rejected prompt says nothing
+about provider health. Its state lives in the process, so several uvicorn workers each hold
+their own view — the same limitation the phase 6 rate limiter will have, and for the same
+reason.
+
+### Known gap (phase 5)
+
+Anyone who can reach the service can spend our provider quota. There is no notion of a
+caller: no API keys, no identity, and therefore nothing to attribute usage to or to rate
+limit against. Phase 5 adds hashed API keys resolved through a `Depends()`, which phase 6
+then keys its token buckets on.
 
 ## Notes for the curious
 
@@ -195,3 +217,8 @@ breaker so a provider that is properly down fails fast instead of tying up worke
   unparseable provider response is nobody's fault but still not a `500`.
 - **Upstream error text is forwarded selectively.** A "model not found" message is useful
   to the caller; an auth message may name our key, so it is dropped.
+- **Retries need a budget, not just a cap.** Three attempts against a 60s read timeout is
+  potentially three minutes of held connection. The budget is what stops one slow request
+  from becoming an outage.
+- **The clock and the sleep are injectable** (`RetryPolicy(clock=..., sleep=...)`), so
+  backoff, budget exhaustion, and breaker recovery are tested without the suite waiting.
