@@ -26,6 +26,7 @@ def build_client(**overrides) -> TestClient:
         "RETRY_INITIAL_BACKOFF_SECONDS": 0.0,
         "RETRY_MAX_ATTEMPTS": 3,
         "CIRCUIT_BREAKER_FAILURE_THRESHOLD": 100,
+        "REQUIRE_API_KEY": False,
     }
 
     return TestClient(

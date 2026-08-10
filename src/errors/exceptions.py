@@ -40,6 +40,31 @@ class AppError(Exception):
         return {"error": error}
 
 
+# The caller is not who we serve
+# ========================================================
+
+
+class Unauthenticated(AppError):
+    status_code = 401
+    code = "unauthenticated"
+    message = "Authentication is required."
+
+    def __init__(self, message: str | None = None, **kwargs: Any) -> None:
+        # RFC 9110: a 401 must say how to authenticate.
+        kwargs.setdefault("headers", {"WWW-Authenticate": "Bearer"})
+        super().__init__(message, **kwargs)
+
+
+class MissingCredentials(Unauthenticated):
+    code = "missing_credentials"
+    message = "Provide an API key as 'Authorization: Bearer <key>'."
+
+
+class InvalidCredentials(Unauthenticated):
+    code = "invalid_credentials"
+    message = "The provided API key is not valid."
+
+
 # The caller made a mistake
 # ========================================================
 

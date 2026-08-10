@@ -15,6 +15,9 @@ down-system-dependencies:
 migrate:
   uv run alembic upgrade head
 
+new-api-key name="unnamed":
+  @uv run python -m src.services.authentication "{{name}}"
+
 check-codestyle:
   uv run ruff check src tests
   uv run ruff format --check src tests

@@ -16,6 +16,8 @@ def client():
     settings = Settings(
         UPSTREAM_BASE_URL=UPSTREAM_BASE_URL,
         UPSTREAM_MODEL="test-model",
+        # Authentication has its own suite; these tests are about the contract.
+        REQUIRE_API_KEY=False,
     )
     # The `with` block matters: it runs lifespan, which builds the http client.
     with TestClient(create_app(settings)) as test_client:

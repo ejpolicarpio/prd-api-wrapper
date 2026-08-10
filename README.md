@@ -29,16 +29,27 @@ brew services start ollama
 ollama pull llama3.2:3b
 
 just install
-just dev
 ```
 
-Then:
+The service **fails closed**: with no API keys configured, every request is refused. Mint
+one and put it in `.env` (which is gitignored):
 
 ```bash
+just new-api-key "Local dev"
+```
+
+Then run it and call it:
+
+```bash
+just dev
+
 curl -X POST http://localhost:8080/v1/complete \
+  -H 'Authorization: Bearer sk-...' \
   -H 'Content-Type: application/json' \
   -d '{"prompt": "Say hello."}'
 ```
+
+To skip authentication entirely while poking around, set `REQUIRE_API_KEY=false`.
 
 Interactive docs at <http://localhost:8080/docs>.
 
@@ -56,6 +67,7 @@ Interactive docs at <http://localhost:8080/docs>.
 | `just codestyle` | Auto-fix with ruff |
 | `just check-codestyle` | ruff lint + format check + `ty` type check |
 | `just kill 8080` | Kill whatever holds a port |
+| `just new-api-key "Name"` | Mint an API key; prints the key once and the record to store |
 | `just up-system-dependencies` | Start postgres (phase 7 — not wired yet) |
 | `just migrate` | Alembic migrations (phase 7 — not wired yet) |
 
@@ -72,6 +84,8 @@ pydantic-settings at startup, so bad config fails on boot rather than on first r
 | `UPSTREAM_BASE_URL` | `http://localhost:11434/v1` | Any OpenAI-compatible base URL |
 | `UPSTREAM_API_KEY` | `ollama` | Ignored by Ollama; real key for hosted providers |
 | `UPSTREAM_MODEL` | `llama3.2:3b` | Default when the request omits `model` |
+| `REQUIRE_API_KEY` | `true` | Fails closed. `false` lets unauthenticated callers through as `anonymous` |
+| `API_KEYS` | `[]` | JSON list of `{id, name, key_hash}`; use `just new-api-key` |
 | `UPSTREAM_TIMEOUT_SECONDS` | `60.0` | Read timeout — models are legitimately slow |
 | `UPSTREAM_CONNECT_TIMEOUT_SECONDS` | `2.0` | Connect timeout — unreachable should fail fast |
 | `RETRY_MAX_ATTEMPTS` | `3` | Total attempts, not extra ones. `1` disables retrying |
@@ -83,9 +97,23 @@ pydantic-settings at startup, so bad config fails on boot rather than on first r
 
 ## API
 
+### Authentication
+
+Every endpoint except `/health` requires an API key:
+
+```
+Authorization: Bearer sk-...
+```
+
+Keys are stored only as a SHA-256 digest, so the plaintext exists exactly once — at mint
+time. A leaked `.env` or database dump yields nothing usable. Plain SHA-256 suffices here
+because keys are long random strings; a *password*, being low-entropy, would need a
+deliberately slow hash like argon2.
+
 ### `GET /health`
 
-Liveness only. Does not yet check the upstream or database (phase 9).
+Liveness only, and deliberately unauthenticated — a probe has no credentials to offer.
+Does not yet check the upstream or database (phase 9).
 
 ### `POST /v1/complete`
 
@@ -128,6 +156,8 @@ Branch on `code`, which is stable. `message` is for humans and may be reworded.
 
 | Status | `code` | Cause |
 | --- | --- | --- |
+| 401 | `missing_credentials` | No `Authorization: Bearer` header |
+| 401 | `invalid_credentials` | Key not recognised — identical response whether unknown, revoked or malformed |
 | 400 | `model_not_found` | Requested a model the provider doesn't have |
 | 400 | `upstream_rejected_request` | Provider refused the request for another reason |
 | 422 | `validation_error` | Request body failed schema validation; `details.fields` lists them |
@@ -151,9 +181,10 @@ src/
   models/                Request/response schemas — our public contract
   services/              Upstream calls; the only place httpx and vendor JSON exist
     resilience.py        Retry policy + circuit breaker (provider-agnostic)
+    authentication.py    Key -> caller, plus minting; runnable as a script
   dependencies/          Depends() providers (settings, http client, services)
   errors/                Error taxonomy + exception handlers
-  repositories/          Database access               (phase 7)
+  repositories/          Where records are looked up; settings-backed until phase 7
   middleware/            Cross-cutting per-request work (phase 9)
 tests/
 ```
@@ -169,7 +200,7 @@ service.
 | 2 | Upstream client | ✅ | Lifespan-managed pooled `httpx` client, service layer, split timeouts |
 | 3 | Error taxonomy | ✅ | `AppError` hierarchy, one envelope, stable error codes |
 | 4 | Resilience | ✅ | Retry with exponential backoff + jitter, budget, circuit breaker |
-| 5 | Client auth | ⬜ | Hashed API keys, caller identity via `Depends()` |
+| 5 | Client auth | ✅ | Hashed API keys, caller identity via `Depends()` |
 | 6 | Rate limiting | ⬜ | Token bucket per caller, `429` + `Retry-After` |
 | 7 | Persistence | ⬜ | Postgres via SQLAlchemy async + alembic: keys, usage, jobs |
 | 8 | Webhooks | ⬜ | `202` + background work + HMAC-signed callback with retries |
@@ -194,12 +225,23 @@ about provider health. Its state lives in the process, so several uvicorn worker
 their own view — the same limitation the phase 6 rate limiter will have, and for the same
 reason.
 
-### Known gap (phase 5)
+### Why authentication is a dependency, not middleware
 
-Anyone who can reach the service can spend our provider quota. There is no notion of a
-caller: no API keys, no identity, and therefore nothing to attribute usage to or to rate
-limit against. Phase 5 adds hashed API keys resolved through a `Depends()`, which phase 6
-then keys its token buckets on.
+Middleware sees every request, so an auth middleware would also intercept `/health`,
+`/docs` and unmatched paths, leaving a path allowlist to maintain — the classic source of
+an accidentally exposed endpoint. It also cannot take part in dependency injection, cannot
+declare itself in the OpenAPI schema, and cannot be overridden per route or in tests.
+
+A `Depends()` is opt-in per route, appears in `/docs` as an Authorize button, and returns
+a value the endpoint can use. Middleware is for work that genuinely applies to every
+request — request IDs, timing — which is phase 9.
+
+### Known gap (phase 6)
+
+Requests are now attributed to a caller, but nothing limits what a caller may spend. One
+client with a valid key can exhaust the provider quota for everyone. Phase 6 adds a token
+bucket keyed on `Caller.id`, returning `429` with `Retry-After` and `X-RateLimit-*`
+headers.
 
 ## Notes for the curious
 
@@ -222,3 +264,8 @@ then keys its token buckets on.
   from becoming an outage.
 - **The clock and the sleep are injectable** (`RetryPolicy(clock=..., sleep=...)`), so
   backoff, budget exhaustion, and breaker recovery are tested without the suite waiting.
+- **Key lookup is a dict keyed by digest**, so no secret is ever compared byte by byte —
+  which sidesteps timing attacks rather than defending against them.
+- **`ApiKeyRepository` is a `Protocol` and its method is `async`** even though the
+  settings-backed implementation does no I/O. Phase 7 swaps in a Postgres one without
+  anything that depends on it changing.

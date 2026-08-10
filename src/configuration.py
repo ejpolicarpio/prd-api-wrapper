@@ -3,6 +3,8 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from src.models.caller import ApiKeyRecord
+
 
 class EnvironmentEnum(StrEnum):
     LOCAL = "local"
@@ -26,6 +28,13 @@ class Settings(BaseSettings):
     UPSTREAM_MODEL: str = "llama3.2:3b"
     UPSTREAM_TIMEOUT_SECONDS: float = 60.0
     UPSTREAM_CONNECT_TIMEOUT_SECONDS: float = 2.0
+
+    # Authentication
+    # ========================================================
+    # Fails closed: with no keys configured, nothing gets through. Set
+    # REQUIRE_API_KEY=false for local poking around.
+    REQUIRE_API_KEY: bool = True
+    API_KEYS: list[ApiKeyRecord] = []
 
     # Resilience
     # ========================================================

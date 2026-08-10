@@ -9,6 +9,7 @@ from src.configuration import Settings
 from src.endpoints.completion import router as completion_router
 from src.endpoints.health import router as health_router
 from src.errors.handlers import register_error_handlers
+from src.repositories.api_keys import ApiKeyRepository, SettingsApiKeyRepository
 from src.services.resilience import CircuitBreaker, RetryPolicy
 
 
@@ -17,6 +18,7 @@ class Application(FastAPI):
     http_client: httpx.AsyncClient
     retry_policy: RetryPolicy
     circuit_breaker: CircuitBreaker
+    api_key_repository: ApiKeyRepository
 
 
 def lifespan_provider(settings: Settings) -> Callable:
@@ -45,6 +47,10 @@ def lifespan_provider(settings: Settings) -> Callable:
             failure_threshold=settings.CIRCUIT_BREAKER_FAILURE_THRESHOLD,
             reset_timeout=settings.CIRCUIT_BREAKER_RESET_SECONDS,
         )
+
+        # Swapped for a Postgres-backed repository in phase 7; the dependency
+        # that consumes it will not need to change.
+        app.api_key_repository = SettingsApiKeyRepository(settings.API_KEYS)
 
         yield
 
