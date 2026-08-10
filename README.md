@@ -72,9 +72,44 @@ Interactive docs at <http://localhost:8080/docs>.
 | `just codestyle` | Auto-fix with ruff |
 | `just check-codestyle` | ruff lint + format check + `ty` type check |
 | `just kill 8080` | Kill whatever holds a port |
-| `just new-api-key "Name"` | Mint an API key; prints the key once and the record to store |
-| `just up-system-dependencies` | Start postgres (phase 7 — not wired yet) |
+| `just new-api-key "Name"` | Mint an API key; prints the key once |
+| `just up` / `just down` | The whole stack in containers: postgres, migrations, API |
+| `just logs [service]` | Follow container logs (defaults to `api`) |
+| `just image` | Build the production image |
+| `just up-system-dependencies` | Start postgres only, for local `just dev` |
 | `just migrate` | Alembic migrations (phase 7 — not wired yet) |
+
+## Running it in containers
+
+```bash
+echo "WEBHOOK_SIGNING_SECRET=$(openssl rand -hex 32)" >> .env
+just up
+```
+
+That builds the image, starts Postgres, runs migrations in a one-shot container, and only
+then starts the API. Mint a key inside it:
+
+```bash
+docker compose exec api python -m src.services.authentication "Your client"
+```
+
+Ollama stays on the host — the containers reach it through `host.docker.internal`.
+
+### Deployment notes
+
+- **Set `WEBHOOK_SIGNING_SECRET`.** The app refuses to start in production without it,
+  because an empty secret still produces a signature: deliveries would look signed while
+  being forgeable. Compose fails the same way rather than substituting a placeholder.
+- **Migrations run in their own container**, not on app startup. With several replicas,
+  each one would otherwise race to migrate the same database.
+- **Point the liveness probe at `/health`, the readiness probe at `/health/ready`.**
+  Swapping them is the classic mistake: a liveness probe that checks the database gets the
+  process killed during a database outage, which does not fix the database.
+- **One worker per container**, scaling by replicas. Rate limit buckets and the circuit
+  breaker are per process either way, so N replicas mean N times the rate limit until
+  those move to shared storage.
+- **The image runs as an unprivileged user** and contains no dev dependencies, no `uv` and
+  no build tools — 318MB, mostly the interpreter and the virtualenv.
 
 ## Configuration
 
@@ -307,8 +342,8 @@ Two rules keep this honest:
 | 7 | Persistence | ✅ | Postgres via SQLAlchemy async + alembic: keys, usage |
 | 8 | Webhooks | ✅ | `202` + background work + HMAC-signed callback with retries |
 | 9 | Observability | ✅ | Request IDs through to background work, structured logs, readiness |
-| 10 | Tests | 🟡 | Grows with each phase; upstream mocked with `respx` |
-| 11 | Ship | ⬜ | Dockerfile, compose, deployment notes |
+| 10 | Tests | ✅ | 107 across two suites; upstream mocked with `respx` |
+| 11 | Ship | ✅ | Multi-stage Dockerfile, compose stack, deployment notes |
 
 ### How retrying decides
 
@@ -371,9 +406,9 @@ Note the second line happened 2.3 seconds *after* the response was sent. Backgro
 takes the id explicitly, because it runs outside the middleware's logging context — without
 that, the most interesting lines would be the ones nothing links back to a request.
 
-### Known gap (phase 10 and 11)
+### Known limits
 
-Three limits worth knowing, all of the same shape — state that lives in one process:
+All eleven phases are done. What remains are deliberate limits, each with a clear upgrade:
 
 - **Background jobs are in-process.** `BackgroundTasks` runs them on the serving worker's
   event loop, so a restart loses anything in flight. The `job` row already holds everything
@@ -383,8 +418,9 @@ Three limits worth knowing, all of the same shape — state that lives in one pr
 - **One webhook signing secret for everyone.** Per-caller secrets would mean one leak
   compromises one client rather than all of them.
 
-What remains is packaging: a Dockerfile, compose wiring for the app itself, and deployment
-notes (phase 11).
+Natural next steps, none of them required: SSE token streaming (one-directional, so not
+WebSockets), per-caller webhook secrets, a Redis-backed rate limiter, and a real queue for
+jobs.
 
 ## Notes for the curious
 

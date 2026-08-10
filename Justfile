@@ -10,6 +10,19 @@ up-system-dependencies:
 down-system-dependencies:
   docker compose down -v
 
+# The whole stack in containers: postgres, migrations, then the API.
+up:
+  docker compose up -d --build --wait
+
+down:
+  docker compose down
+
+logs service="api":
+  docker compose logs -f {{service}}
+
+image:
+  docker build -t api-wrapper:local .
+
 migrate:
   uv run alembic upgrade head
 

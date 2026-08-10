@@ -1,0 +1,23 @@
+# Everything the image does not need. Keeping this tight matters for more than
+# size: .env and .git would otherwise be baked into a layer forever.
+.git
+.gitignore
+.env
+.env.*
+.venv
+.idea
+.claude
+.python-version
+
+__pycache__
+**/__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.mypy_cache
+
+tests
+docker-compose.yml
+Dockerfile
+Justfile
+README.md

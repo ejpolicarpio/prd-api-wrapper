@@ -1,3 +1,18 @@
+x-app-environment: &app-environment
+  POSTGRESQL_HOST: postgres
+  POSTGRESQL_PORT: 5432
+  POSTGRESQL_USERNAME: postgres
+  POSTGRESQL_PASSWORD: postgres
+  POSTGRESQL_DB: postgres
+  # The provider runs on the host, not in the network.
+  UPSTREAM_BASE_URL: ${UPSTREAM_BASE_URL:-http://host.docker.internal:11434/v1}
+  UPSTREAM_MODEL: ${UPSTREAM_MODEL:-llama3.2:3b}
+  # No default: the app refuses to start in production without it, and a
+  # placeholder here would defeat the point of that check.
+  WEBHOOK_SIGNING_SECRET: ${WEBHOOK_SIGNING_SECRET:?set WEBHOOK_SIGNING_SECRET in .env}
+  ENVIRONMENT: ${ENVIRONMENT:-production}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
 services:
   postgres:
     image: postgres:17-alpine
@@ -16,6 +31,37 @@ services:
       interval: 2s
       timeout: 3s
       retries: 15
+
+  # Migrations as their own one-shot container rather than something the app
+  # does on boot: with several replicas, every one of them would race to
+  # migrate the same database.
+  migrate:
+    build: .
+    command: ["alembic", "upgrade", "head"]
+    environment: *app-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: "no"
+
+  api:
+    build: .
+    ports:
+      - "${PORT:-8080}:8080"
+    environment: *app-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        # Start only once the schema is actually in place.
+        condition: service_completed_successfully
+    extra_hosts:
+      # Lets the container reach Ollama on the host; Docker Desktop provides
+      # this name already, Linux needs it stated.
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
 
 volumes:
   postgres_data:
