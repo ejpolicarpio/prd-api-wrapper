@@ -19,6 +19,10 @@ It is configuration, not code — any OpenAI-compatible provider works by changi
 
 This is a learning project, built in phases. See [Roadmap](#roadmap).
 
+📊 **[Visual guide](https://ejpolicarpio.github.io/prd-api-wrapper/)** — the same architecture as
+flowcharts: request lifecycle, error taxonomy, retry and circuit breaker states, webhook
+signing, and the data model. Source lives in [`docs/index.html`](docs/index.html).
+
 ## Quick start
 
 Prerequisites: [uv](https://docs.astral.sh/uv/), [just](https://just.systems/), and Ollama.

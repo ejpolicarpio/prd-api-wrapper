@@ -1,0 +1,1076 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Production API Wrapper — visual guide</title>
+<meta name="description" content="A visual walkthrough of a production FastAPI proxy: auth, rate limiting, retries, circuit breaker, webhooks, persistence and tracing.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>&#x1F517;</text></svg>">
+<style>
+  :root {
+    color-scheme: light dark;
+
+    --bg:        #ffffff;
+    --bg-soft:   #f6f7f9;
+    --bg-inset:  #eceff3;
+    --line:      #d8dee6;
+    --line-soft: #e6eaf0;
+    --text:      #1c2128;
+    --text-dim:  #59636e;
+    --accent:    #2f6feb;
+    --accent-dim:#dbe7ff;
+    --good:      #1a7f4b;
+    --warn:      #9a6700;
+    --bad:       #b62324;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:        #0d1117;
+      --bg-soft:   #151b23;
+      --bg-inset:  #1c232c;
+      --line:      #2f3742;
+      --line-soft: #232a33;
+      --text:      #e4e8ee;
+      --text-dim:  #99a3b0;
+      --accent:    #6aa1ff;
+      --accent-dim:#1a2740;
+      --good:      #48c17c;
+      --warn:      #d7a63b;
+      --bad:       #f0666a;
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 24px 96px; }
+
+  /* ---------- header ---------- */
+
+  header {
+    border-bottom: 1px solid var(--line);
+    background: var(--bg-soft);
+    padding: 56px 0 44px;
+    margin-bottom: 48px;
+  }
+  header .wrap { padding-bottom: 0; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin: 0 0 14px;
+  }
+
+  h1 {
+    font-size: clamp(30px, 5vw, 44px);
+    line-height: 1.15;
+    letter-spacing: -.02em;
+    margin: 0 0 16px;
+  }
+
+  .lede {
+    font-size: 19px;
+    color: var(--text-dim);
+    max-width: 62ch;
+    margin: 0 0 28px;
+  }
+
+  .badges { display: flex; flex-wrap: wrap; gap: 8px; }
+  .badge {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    padding: 4px 10px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--bg);
+    color: var(--text-dim);
+  }
+  .badge.link { color: var(--accent); text-decoration: none; border-color: var(--accent); }
+  .badge.link:hover { background: var(--accent-dim); }
+
+  /* ---------- sections ---------- */
+
+  section { margin: 0 0 64px; scroll-margin-top: 24px; }
+
+  h2 {
+    font-size: 25px;
+    letter-spacing: -.01em;
+    margin: 0 0 6px;
+    padding-top: 8px;
+  }
+  h2 .num {
+    font-family: var(--mono);
+    font-size: 14px;
+    color: var(--accent);
+    margin-right: 10px;
+    font-weight: 500;
+  }
+
+  h3 { font-size: 17px; margin: 32px 0 8px; }
+
+  p { margin: 0 0 16px; max-width: 74ch; }
+  .sub { color: var(--text-dim); margin-bottom: 24px; max-width: 74ch; }
+
+  a { color: var(--accent); }
+
+  code {
+    font-family: var(--mono);
+    font-size: .875em;
+    background: var(--bg-inset);
+    padding: 1.5px 5px;
+    border-radius: 4px;
+  }
+
+  /* ---------- diagram frame ---------- */
+
+  figure {
+    margin: 24px 0;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--bg-soft);
+    overflow: hidden;
+  }
+  .diagram { overflow-x: auto; padding: 24px 20px; }
+  pre.mermaid {
+    margin: 0;
+    text-align: center;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  pre.mermaid svg { max-width: 100%; height: auto; }
+  figcaption {
+    border-top: 1px solid var(--line-soft);
+    padding: 12px 20px;
+    font-size: 14px;
+    color: var(--text-dim);
+    background: var(--bg);
+  }
+
+  /* ---------- callout ---------- */
+
+  .why {
+    border-left: 3px solid var(--accent);
+    background: var(--bg-soft);
+    padding: 14px 18px;
+    border-radius: 0 8px 8px 0;
+    margin: 20px 0;
+  }
+  .why strong { color: var(--text); }
+  .why p { margin: 0; font-size: 15px; color: var(--text-dim); }
+  .why p + p { margin-top: 10px; }
+
+  /* ---------- tables ---------- */
+
+  .scroll { overflow-x: auto; margin: 20px 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+  th, td {
+    text-align: left;
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--line-soft);
+    vertical-align: top;
+  }
+  th {
+    font-size: 12px;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  td code { white-space: nowrap; }
+  .done { color: var(--good); }
+
+  ul { margin: 0 0 16px; padding-left: 22px; max-width: 74ch; }
+  li { margin-bottom: 8px; }
+
+  /* ---------- toc ---------- */
+
+  nav.toc {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 18px 22px;
+    margin-bottom: 56px;
+    background: var(--bg-soft);
+  }
+  nav.toc p {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin: 0 0 10px;
+  }
+  nav.toc ol {
+    margin: 0; padding: 0; list-style: none;
+    columns: 2; column-gap: 32px;
+  }
+  nav.toc li { margin-bottom: 5px; break-inside: avoid; font-size: 15px; }
+  nav.toc a { text-decoration: none; }
+  nav.toc a:hover { text-decoration: underline; }
+  nav.toc .i { font-family: var(--mono); color: var(--text-dim); font-size: 13px; margin-right: 8px; }
+
+  @media (max-width: 640px) {
+    nav.toc ol { columns: 1; }
+    .wrap { padding: 0 18px 64px; }
+  }
+
+  footer {
+    border-top: 1px solid var(--line);
+    color: var(--text-dim);
+    font-size: 14px;
+    padding-top: 24px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <p class="eyebrow">Learning project · 1 of a series</p>
+    <h1>Production API Wrapper</h1>
+    <p class="lede">
+      A FastAPI proxy in front of an LLM provider. Not a script with routes bolted on —
+      it authenticates callers, meters them, survives the provider having a bad day,
+      answers slow work asynchronously, and can explain what it did afterwards.
+    </p>
+    <div class="badges">
+      <a class="badge link" href="https://github.com/ejpolicarpio/prd-api-wrapper">github.com/ejpolicarpio/prd-api-wrapper</a>
+      <span class="badge">FastAPI</span>
+      <span class="badge">Python 3.14</span>
+      <span class="badge">PostgreSQL + SQLAlchemy 2.0</span>
+      <span class="badge">httpx</span>
+      <span class="badge">Docker</span>
+      <span class="badge">107 tests</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+<nav class="toc">
+  <p>Contents</p>
+  <ol>
+    <li><span class="i">01</span><a href="#picture">The whole thing in one picture</a></li>
+    <li><span class="i">02</span><a href="#lifecycle">Life of a request</a></li>
+    <li><span class="i">03</span><a href="#errors">The error taxonomy</a></li>
+    <li><span class="i">04</span><a href="#retry">Retrying, and knowing when to stop</a></li>
+    <li><span class="i">05</span><a href="#breaker">The circuit breaker</a></li>
+    <li><span class="i">06</span><a href="#auth">Authentication</a></li>
+    <li><span class="i">07</span><a href="#ratelimit">Rate limiting</a></li>
+    <li><span class="i">08</span><a href="#jobs">Async jobs and webhooks</a></li>
+    <li><span class="i">09</span><a href="#data">The data model</a></li>
+    <li><span class="i">10</span><a href="#layers">How the code is arranged</a></li>
+    <li><span class="i">11</span><a href="#tracing">Tracing and health</a></li>
+    <li><span class="i">12</span><a href="#roadmap">Roadmap and known limits</a></li>
+  </ol>
+</nav>
+
+<!-- ============================================================ -->
+<section id="picture">
+  <h2><span class="num">01</span>The whole thing in one picture</h2>
+  <p class="sub">
+    Every request walks the same corridor. Each gate can turn it away, and each gate
+    is a separate concern with its own file.
+  </p>
+
+  <figure>
+    <div class="diagram">
+<pre class="mermaid">
+flowchart TB
+    C["Client request
+Authorization: Bearer sk-…"]
+    C --> MW["Request ID middleware
+every log line now carries the id"]
+
+    MW --> AUTH{"Key known?"}
+    AUTH -->|no| E1["401 unauthenticated"]
+
+    AUTH -->|yes| RL{"Token left in
+this caller's bucket?"}
+    RL -->|no| E2["429 + Retry-After"]
+
+    RL -->|yes| SVC["CompletionService
+the only place vendor JSON lives"]
+
+    SVC --> CB{"Circuit closed?"}
+    CB -->|open| E3["503 upstream_circuit_open"]
+
+    CB -->|closed| UP["Upstream provider
+POST /chat/completions
+retried with jitter if it fails"]
+
+    UP --> OK["200 + content + token usage"]
+
+    DB[("PostgreSQL
+api_key · usage · job")]
+    AUTH -. look up key digest .-> DB
+    OK -. record usage .-> DB
+</pre>
+    </div>
+    <figcaption>Solid arrows are the request path; dotted arrows are database access.</figcaption>
+  </figure>
+
+  <div class="why">
+    <p><strong>Why a wrapper at all?</strong> Calling a provider directly from your app
+    means every caller shares one key, nobody can be metered or throttled independently,
+    a provider outage becomes your outage, and swapping providers means editing every
+    call site.</p>
+    <p>The wrapper is the seam where all of that becomes solvable in one place.</p>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="lifecycle">
+  <h2><span class="num">02</span>Life of a request</h2>
+  <p class="sub">
+    The synchronous path — <code>POST /v1/complete</code>. Note the order: identity is
+    established before anything is charged, because there is no bucket to charge until
+    you know whose it is.
+  </p>
+
+  <figure>
+    <div class="diagram">
+<pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant M as Request ID middleware
+    participant A as Authentication service
+    participant L as Rate limiter
+    participant S as Completion service
+    participant B as Circuit breaker
+    participant U as Upstream
+    participant D as PostgreSQL
+
+    C->>M: POST /v1/complete
+    M->>M: assign request_id, bind to log context
+    M->>A: authenticate(bearer token)
+    A->>D: find_by_hash(sha256(key))
+    D-->>A: Caller
+    A->>L: check(caller.id)
+    L-->>A: allowed, remaining 58
+    A->>S: complete(request, caller)
+    S->>B: before_call()
+    B-->>S: closed, proceed
+    S->>U: POST /chat/completions
+    U-->>S: 200 with usage
+    S->>B: record_success()
+    S->>D: record usage (own transaction)
+    S-->>C: 200 with content plus X-RateLimit headers
+</pre>
+    </div>
+    <figcaption>Steps 3–7 are FastAPI dependencies, not middleware. Section 06 explains why that matters.</figcaption>
+  </figure>
+
+  <p>
+    The endpoint itself is three lines. It parses, delegates to the service, and returns —
+    everything above happens in dependencies and services, which is what makes each piece
+    testable on its own.
+  </p>
+</section>
+
+<!-- ============================================================ -->
+<section id="errors">
+  <h2><span class="num">03</span>The error taxonomy</h2>
+  <p class="sub">
+    Errors are classified by one question: <strong>who can act on this?</strong>
+    That single question decides the status code, whether we retry, and whether the
+    circuit breaker counts it.
+  </p>
+
+  <figure>
+    <div class="diagram">
+<pre class="mermaid">
+flowchart LR
+    START["Something failed"] --> Q1{"Whose fault?"}
+
+    Q1 -->|"Caller's"| CALLER
+    Q1 -->|"Ours"| OURS
+    Q1 -->|"Provider's"| THEIRS
+
+    subgraph CALLER["Caller can fix it"]
+        direction TB
+        C1["401 unauthenticated
+missing or invalid key"]
+        C2["422 validation_error
+malformed body"]
+        C3["400 model_not_found
+400 upstream_rejected_request"]
+        C4["429 rate_limit_exceeded
+they spent their allowance"]
+    end
+
+    subgraph OURS["Only we can fix it"]
+        direction TB
+        O1["502 upstream_auth_failed
+our provider key is bad"]
+        O2["502 invalid_upstream_response
+we could not parse it"]
+        O3["500 internal_error
+a bug — anything not an AppError"]
+    end
+
+    subgraph THEIRS["Provider problem, wait it out"]
+        direction TB
+        T1["503 upstream_unavailable"]
+        T2["504 upstream_timeout"]
+        T3["502 upstream_error"]
+        T4["429 upstream_rate_limited"]
+        T5["503 upstream_circuit_open"]
+    end
+
+    CALLER --> NR["retryable = false
+fail immediately"]
+    OURS --> NR
+    THEIRS --> R["retryable = true
+back off and try again"]
+    T5 --> NR
+</pre>
+    </div>
+    <figcaption>Every error is an <code>AppError</code> subclass pinning a status, a stable machine-readable code, and a <code>retryable</code> flag.</figcaption>
+  </figure>
+
+  <div class="why">
+    <p><strong>The subtle one.</strong> A provider returning 401 becomes a <em>502</em> to
+    our caller, not a 401. The credentials at fault are ours. Passing the 401 through would
+    send the caller chasing a problem they cannot possibly fix.</p>
+    <p><strong>The other subtle one.</strong> <code>upstream_circuit_open</code> sits with
+    the provider failures but is <em>not</em> retryable — the breaker exists precisely to
+    stop us from trying.</p>
+  </div>
+
+  <p>Every failure comes back in the same envelope, so a client only ever writes one parser:</p>
+
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Field</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>error.code</code></td><td>Stable. Branch on this.</td></tr>
+      <tr><td><code>error.message</code></td><td>For humans. May change between releases.</td></tr>
+      <tr><td><code>error.details</code></td><td>Optional structured context (the model name, the upstream status).</td></tr>
+      <tr><td><code>error.request_id</code></td><td>The one string that finds every log line for this call.</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="retry">
+  <h2><span class="num">04</span>Retrying, and knowing when to stop</h2>
+  <p class="sub">
+    The retry policy reads <code>AppError.retryable</code> and nothing else. Extending the
+    taxonomy extends the policy for free.
+  </p>
+
+  <figure>
+    <div class="diagram">
+<pre class="mermaid">
+flowchart TB
+    A["Attempt the call"] --> B{"Did it fail?"}
+    B -->|no| DONE["Return the result"]
+    B -->|yes| C{"retryable?"}
+    C -->|no| RAISE["Raise now — a rejected
+prompt fails identically forever"]
+    C -->|yes| D{"attempts &lt; max?"}
+    D -->|no| RAISE2["Out of attempts, raise"]
+    D -->|yes| E{"Provider sent
+Retry-After?"}
+    E -->|yes| F["Believe it, capped at max_backoff"]
+    E -->|no| G["initial × 2^(n-1), capped
+× random() — full jitter"]
+    F --> H{"Would the wait
+blow the time budget?"}
+    G --> H
+    H -->|yes| RAISE3["Raise — arriving at the same
+answer later is worse"]
+    H -->|no| I["Sleep, then retry"]
+    I --> A
+</pre>
+    </div>
+    <figcaption>Two independent limits: a maximum attempt count and a separate wall-clock budget.</figcaption>
+  </figure>
+
+  <div class="why">
+    <p><strong>Why the randomness matters.</strong> Without jitter, every client that
+    failed at the same instant retries at the same instant. A provider that was just
+    coming back up gets flattened again by the synchronised wave — the "thundering herd".</p>
+    <p>Full jitter means a uniform pick from <code>[0, cap]</code>, not the cap itself.
+    Clients spread out instead of marching in step.</p>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="breaker">
+  <h2><span class="num">05</span>The circuit breaker</h2>
+  <p class="sub">
+    Retrying helps with a blip. During a real outage it actively hurts: every caller
+    queues behind a provider that cannot answer, and their downtime becomes yours.
+  </p>
+
+  <figure>
+    <div class="diagram">
+<pre class="mermaid">
+stateDiagram-v2
+    direction LR
+    [*] --> CLOSED
+
+    CLOSED --> OPEN: consecutive retryable failures reach the threshold
+    OPEN --> HALF_OPEN: reset timeout has elapsed
+    HALF_OPEN --> CLOSED: the probe succeeded
+    HALF_OPEN --> OPEN: the probe failed, back to waiting
+
+    note right of CLOSED
+        Normal. Calls go through.
+        Any success resets the count to zero.
+    end note
+
+    note right of OPEN
+        Calls fail instantly with 503,
+        never touching the network.
+    end note
+
+    note right of HALF_OPEN
+        Exactly one request is let
+        through to test the water.
+    end note
+</pre>
+    </div>
+    <figcaption>Only <code>retryable</code> failures are counted — a rejected prompt says nothing about the provider's health.</figcaption>
+  </figure>
+
+  <p>
+    The breaker's state lives in the process. Run several uvicorn workers and each holds
+    its own view, which is a real limitation and a deliberate one: the fix is a shared
+    store, and that is a different project's problem.
+  </p>
+</section>
+
+<!-- ============================================================ -->
+<section id="auth">
+  <h2><span class="num">06</span>Authentication</h2>
+  <p class="sub">
+    Keys are minted by an operator, shown exactly once, and never stored in a form that
+    could be replayed if the database leaked.
+  </p>
+
+  <figure>
+    <div class="diagram">
+<pre class="mermaid">
+flowchart LR
+    subgraph MINT["Minting — one time, offline"]
+        direction TB
+        M1["just new-api-key 'Acme Corp'"] --> M2["secrets.token_urlsafe(32)
+→ sk-xR9k…"]
+        M2 --> M3["sha256(key)"]
+        M3 --> M4[("store id, name,
+key_hash only")]
+        M2 --> M5["print once
+never recoverable"]
+    end
+
+    subgraph VERIFY["Verifying — every request"]
+        direction TB
+        V1["Authorization: Bearer sk-xR9k…"] --> V2{"Header present?"}
+        V2 -->|no| V3["401 missing_credentials"]
+        V2 -->|yes| V4["sha256(presented key)"]
+        V4 --> V5{"Digest found
+and not revoked?"}
+        V5 -->|no| V6["401 invalid_credentials"]
+        V5 -->|yes| V7["Caller(id, name)"]
+    end
+
+    M5 -. given to the client .-> V1
+    M4 -. lookup by digest .-> V5
+</pre>
+    </div>
+    <figcaption>Unknown, revoked and malformed keys all produce the identical 401 — distinguishing them helps anyone probing for valid keys.</figcaption>
+  </figure>
+
+  <div class="why">
+    <p><strong>Why a dependency and not middleware?</strong> Middleware sees every request,
+    so an auth middleware would also intercept <code>/health</code>, <code>/docs</code> and
+    unmatched paths — leaving you maintaining a path allowlist, the classic source of an
+    accidentally exposed endpoint.</p>
+    <p>A <code>Depends()</code> is opt-in per route, shows up in the generated docs as an
+    Authorize button, returns a value the endpoint can use, and can be swapped out in tests.
+    Middleware is for work that genuinely applies to everything — request IDs, timing.</p>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="ratelimit">
+  <h2><span class="num">07</span>Rate limiting</h2>
+  <p class="sub">
+    One token bucket per caller. Tokens accrue continuously and cap at the burst size,
+    so idling buys you a burst but never an unbounded backlog.
+  </p>
+
+  <figure>
+    <div class="diagram">
+<pre class="mermaid">
+flowchart TB
+    REQ["Request from caller X"] --> GET["Find X's bucket
+create a full one if new"]
+    GET --> FILL["Refill: add elapsed × rate,
+clamped at capacity"]
+    FILL --> Q{"tokens &gt;= 1?"}
+    Q -->|yes| SPEND["Spend one token"]
+    Q -->|no| DENY["429 rate_limit_exceeded"]
+    SPEND --> HDR["X-RateLimit-Limit
+X-RateLimit-Remaining
+X-RateLimit-Reset"]
+    DENY --> HDR2["Same three headers
+plus Retry-After"]
+    HDR --> PROCEED["Carry on to the service"]
+</pre>
+    </div>
+    <figcaption>Headers go out on <em>every</em> response, not just rejections — the token was spent either way, so the caller is owed the count.</figcaption>
+  </figure>
+
+  <div class="why">
+    <p><strong>Why not a counter per minute?</strong> A fixed window of "60 per minute"
+    lets a caller fire all 60 at 11:59:59 and 60 more at 12:00:00 — 120 requests in two
+    seconds, at a limit you believed was 60 a minute.</p>
+    <p>A bucket has no window boundary to straddle. There is nothing to wait for and
+    exploit.</p>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="jobs">
+  <h2><span class="num">08</span>Async jobs and webhooks</h2>
+  <p class="sub">
+    A completion can take tens of seconds. Holding an HTTP connection open for that is
+    fragile — a dropped connection loses the result, and every in-flight request occupies
+    a worker. So the request is recorded, a <code>202</code> comes back immediately, and
+    the answer is pushed to a callback URL later.
+  </p>
+
+  <figure>
+    <div class="diagram">
+<pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant API as POST /v1/jobs
+    participant D as PostgreSQL
+    participant BG as Background task
+    participant U as Upstream
+    participant W as Client's callback URL
+
+    C->>API: prompt plus callback_url
+    API->>D: INSERT job (status pending)
+    Note over API,D: persisted before the 202 — an id we hand out must be one the caller can look up
+    API-->>C: 202 Accepted with job id
+    Note over C: connection closes here
+
+    API->>BG: queue run(job_id, request_id)
+    BG->>D: status running
+    BG->>U: the actual completion
+    U-->>BG: content plus token usage
+    BG->>D: status succeeded, store content
+    BG->>W: POST signed payload
+    W-->>BG: 200 OK
+    BG->>D: delivery_attempts, delivered_at
+
+    C->>API: GET /v1/jobs/:id (optional fallback)
+    API-->>C: current status and result
+</pre>
+    </div>
+    <figcaption>The webhook is the primary channel; polling <code>GET /v1/jobs/{id}</code> is the safety net if a delivery never lands.</figcaption>
+  </figure>
+
+  <h3>How the receiver knows it is really us</h3>
+
+  <figure>
+    <div class="diagram">
+<pre class="mermaid">
+flowchart LR
+    subgraph SEND["We send"]
+        direction TB
+        S1["body = JSON bytes"] --> S2["message = timestamp . body"]
+        S2 --> S3["HMAC-SHA256 with shared secret"]
+        S3 --> S4["X-Signature: sha256=…
+X-Signature-Timestamp: …"]
+    end
+
+    subgraph RECV["They verify"]
+        direction TB
+        R1["Read the RAW body
+before parsing any JSON"] --> R2["Recompute the HMAC"]
+        R2 --> R3{"compare_digest matches?"}
+        R3 -->|no| R4["Reject — forged"]
+        R3 -->|yes| R5{"Timestamp recent?"}
+        R5 -->|no| R6["Reject — replayed"]
+        R5 -->|yes| R7["Trust it. Dedupe on job_id."]
+    end
+
+    S4 -. HTTP POST .-> R1
+</pre>
+    </div>
+    <figcaption>Three details do the work: the timestamp is <em>inside</em> the signed material, the body is signed as raw bytes, and the comparison is constant-time.</figcaption>
+  </figure>
+
+  <div class="why">
+    <p><strong>Why raw bytes?</strong> Re-serialising JSON can reorder keys and change
+    whitespace, which changes the digest. Verify first, parse second.</p>
+    <p><strong>Why constant-time comparison?</strong> A plain <code>==</code> returns early
+    on the first differing byte. Timing that tells an attacker how much of a forged
+    signature was correct, one byte at a time.</p>
+    <p><strong>Why a separate HTTP client?</strong> The upstream client carries the
+    provider's <code>Authorization</code> header. Sending that to a URL the <em>caller</em>
+    chose would hand them our key.</p>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="data">
+  <h2><span class="num">09</span>The data model</h2>
+  <p class="sub">Three tables. Everything hangs off the API key, because the key is the identity.</p>
+
+  <figure>
+    <div class="diagram">
+<pre class="mermaid">
+erDiagram
+    api_key ||--o{ usage : "charged to"
+    api_key ||--o{ job : "owns"
+
+    api_key {
+        string   id          PK "32 chars"
+        string   name           "who it was issued to"
+        string   key_hash    UK "sha256, indexed — every request looks up here"
+        datetime created_at
+        datetime revoked_at     "null means active; revoke is not a delete"
+        datetime last_used_at
+    }
+
+    usage {
+        bigint   id                PK
+        string   api_key_id        FK
+        string   model
+        int      prompt_tokens
+        int      completion_tokens
+        int      status_code          "recorded on failure too"
+        int      duration_ms
+        datetime created_at
+    }
+
+    job {
+        string   id                PK
+        string   api_key_id        FK
+        string   status               "pending running succeeded failed"
+        string   model
+        text     prompt
+        string   callback_url
+        text     content              "null until it succeeds"
+        string   error_code           "null unless it failed"
+        text     error_message
+        int      delivery_attempts
+        datetime delivered_at         "null means undelivered"
+        datetime created_at
+        datetime updated_at
+    }
+</pre>
+    </div>
+    <figcaption>Both child tables carry a composite index on <code>(api_key_id, created_at)</code> — "what did this caller do recently" is the query they exist to answer.</figcaption>
+  </figure>
+
+  <h3>Transactions, and the one deliberate exception</h3>
+
+  <figure>
+    <div class="diagram">
+<pre class="mermaid">
+flowchart TB
+    REQ["Request arrives"] --> OPEN["Open one session for this request"]
+    OPEN --> RUN["Handler runs"]
+    RUN --> Q{"Did it raise?"}
+    Q -->|no| COMMIT["COMMIT — the request happened"]
+    Q -->|yes| ROLL["ROLLBACK — as if it never happened"]
+
+    RUN -.-> USAGE["Usage recording opens its
+OWN short transaction"]
+    USAGE --> UCOMMIT["Commits independently"]
+
+    ROLL --> KEPT["Usage row survives the rollback"]
+    UCOMMIT --> KEPT
+</pre>
+    </div>
+    <figcaption>Sharing the request's transaction would mean a failed request rolls its own usage row away — losing exactly the records worth having.</figcaption>
+  </figure>
+
+  <p>
+    An outage is precisely when you most want to know who was calling. So usage recording
+    is given the session <em>factory</em> rather than the request's session, and is
+    best-effort: a caller who got their completion is never handed a 500 because an
+    analytics write failed.
+  </p>
+</section>
+
+<!-- ============================================================ -->
+<section id="layers">
+  <h2><span class="num">10</span>How the code is arranged</h2>
+  <p class="sub">
+    Two rules keep this honest. <strong>Endpoints stay about three lines</strong> —
+    anything more belongs in a service. <strong>Data structures live in <code>models/</code>,
+    behaviour lives in <code>services/</code></strong> — whether or not the type crosses a
+    boundary.
+  </p>
+
+  <figure>
+    <div class="diagram">
+<pre class="mermaid">
+flowchart TB
+    L1["endpoints/ — thin routers
+completion.py · jobs.py · health.py"]
+
+    L2["dependencies/ — the wiring, and the test seam
+common.py (settings · session · services)
+auth.py (CallerDep) · rate_limit.py (RateLimitDep)"]
+
+    L3["services/ — all the behaviour
+completion.py — the only place httpx and vendor JSON live
+resilience.py (RetryPolicy · CircuitBreaker)
+authentication.py · rate_limiter.py · jobs.py · webhooks.py"]
+
+    L4["repositories/ — row access, behind Protocols
+api_keys.py · usage.py · jobs.py"]
+
+    L5["models/ — every data structure
+API contract · tables.py (SQLAlchemy)
+value objects: Caller · RateLimitDecision · CircuitState"]
+
+    X["errors/ · middleware/ · logs.py
+cut across every layer"]
+
+    L1 --> L2 --> L3 --> L4
+    L3 --> UP["Upstream provider"]
+    L4 --> DB[("PostgreSQL")]
+    L3 -. uses .-> L5
+    L4 -. uses .-> L5
+</pre>
+    </div>
+    <figcaption>Repositories sit behind <code>Protocol</code>s, so the fast test suite swaps in in-memory implementations and runs with no database at all.</figcaption>
+  </figure>
+
+  <div class="why">
+    <p><strong>The dependency layer is the test seam.</strong> Because every service is
+    obtained through <code>Depends()</code>, a test overrides one provider with
+    <code>app.dependency_overrides</code> and the rest of the app is untouched. No
+    monkeypatching, no import-order tricks.</p>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="tracing">
+  <h2><span class="num">11</span>Tracing and health</h2>
+  <p class="sub">
+    Every request gets an id — taken from an inbound <code>X-Request-ID</code> when it
+    looks safe, generated otherwise — returned in the response header, included in error
+    bodies, and bound into every log line that request produces.
+  </p>
+
+  <figure>
+    <div class="diagram">
+<pre class="mermaid">
+flowchart LR
+    IN["Inbound request"] --> ID{"X-Request-ID
+present and sane?"}
+    ID -->|yes| USE["Adopt it — the caller's
+trace and ours now match"]
+    ID -->|no| GEN["Generate one"]
+    USE --> BIND["Bind to the logging context"]
+    GEN --> BIND
+    BIND --> LOGS["Every log line for this request
+carries request_id"]
+    BIND --> HDR["Returned in X-Request-ID"]
+    BIND --> ERR["Included in error bodies"]
+    BIND --> BG["Passed EXPLICITLY into
+background work"]
+    BG --> LATE["Webhook delivery 2.3s after
+the response still traces back"]
+</pre>
+    </div>
+    <figcaption>Background work takes the id explicitly because it runs outside the middleware's context — otherwise the most interesting log lines would be the ones nothing links back to a request.</figcaption>
+  </figure>
+
+  <h3>Two different health questions</h3>
+
+  <div class="scroll">
+  <table>
+    <thead>
+      <tr><th>Probe</th><th>Question</th><th>Checks</th><th>If it fails</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>GET /health</code></td>
+        <td>Is this process alive?</td>
+        <td>Nothing at all, deliberately</td>
+        <td>The process is restarted</td>
+      </tr>
+      <tr>
+        <td><code>GET /health/ready</code></td>
+        <td>Should it be sent traffic right now?</td>
+        <td>Database <code>SELECT 1</code> and a short upstream probe</td>
+        <td>Pulled from the load balancer, kept alive to recover</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="why">
+    <p><strong>Why liveness checks nothing.</strong> A liveness probe that fails when the
+    database is down gets the process killed and restarted. That does not fix a database,
+    and it turns a partial outage into a total one.</p>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="roadmap">
+  <h2><span class="num">12</span>Roadmap and known limits</h2>
+  <p class="sub">Built in eleven phases, each one adding a capability the previous phase made necessary.</p>
+
+  <div class="scroll">
+  <table>
+    <thead>
+      <tr><th>#</th><th>Phase</th><th>Status</th><th>What it adds</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>1</td><td>Contract</td><td class="done">done</td><td>Request/response models, generated OpenAPI docs</td></tr>
+      <tr><td>2</td><td>Upstream client</td><td class="done">done</td><td>Lifespan-managed pooled <code>httpx</code> client, service layer, split timeouts</td></tr>
+      <tr><td>3</td><td>Error taxonomy</td><td class="done">done</td><td><code>AppError</code> hierarchy, one envelope, stable codes</td></tr>
+      <tr><td>4</td><td>Resilience</td><td class="done">done</td><td>Retry with backoff and jitter, budget, circuit breaker</td></tr>
+      <tr><td>5</td><td>Client auth</td><td class="done">done</td><td>Hashed API keys, caller identity via <code>Depends()</code></td></tr>
+      <tr><td>6</td><td>Rate limiting</td><td class="done">done</td><td>Token bucket per caller, 429 with <code>Retry-After</code></td></tr>
+      <tr><td>7</td><td>Persistence</td><td class="done">done</td><td>Postgres via SQLAlchemy async and Alembic</td></tr>
+      <tr><td>8</td><td>Webhooks</td><td class="done">done</td><td>202, background work, HMAC-signed callback with retries</td></tr>
+      <tr><td>9</td><td>Observability</td><td class="done">done</td><td>Request IDs into background work, structured logs, readiness</td></tr>
+      <tr><td>10</td><td>Tests</td><td class="done">done</td><td>107 across two suites, upstream mocked with <code>respx</code></td></tr>
+      <tr><td>11</td><td>Ship</td><td class="done">done</td><td>Multi-stage Dockerfile, compose stack, deployment notes</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Deliberate limits, each with a clear upgrade</h3>
+  <ul>
+    <li><strong>Background jobs are in-process.</strong> <code>BackgroundTasks</code> runs
+      them on the serving worker's event loop, so a restart loses anything in flight. The
+      <code>job</code> row already holds everything a real queue worker would need, so
+      moving to arq or Celery is mostly relocating <code>JobService.run</code>.</li>
+    <li><strong>Rate limit buckets are per process</strong>, so N workers enforce N times
+      the intended limit. The fix is a shared store like Redis — which is why the limiter's
+      <code>check</code> is already <code>async</code> despite doing no I/O.</li>
+    <li><strong>Circuit breaker state is per process</strong>, for the same reason and with
+      the same fix.</li>
+    <li><strong>One webhook signing secret for everyone.</strong> Per-caller secrets would
+      mean one leak compromises one client rather than all of them.</li>
+  </ul>
+
+  <p>
+    Natural next steps, none of them required: SSE token streaming (one-directional, so not
+    WebSockets), per-caller webhook secrets, a Redis-backed rate limiter, and a real queue
+    for jobs.
+  </p>
+</section>
+
+<footer>
+  <p>
+    Source, setup and the full written walkthrough live in the
+    <a href="https://github.com/ejpolicarpio/prd-api-wrapper">repository README</a>.
+    This page is generated from <code>docs/index.html</code>.
+  </p>
+</footer>
+
+</div>
+
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+
+  const blocks = [...document.querySelectorAll('pre.mermaid')];
+  // Keep the source: re-rendering on a theme change needs the original text back.
+  blocks.forEach(block => { block.dataset.source = block.textContent; });
+
+  const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
+
+  async function render() {
+    const dark = darkQuery.matches;
+
+    blocks.forEach(block => {
+      block.textContent = block.dataset.source;
+      block.removeAttribute('data-processed');
+    });
+
+    mermaid.initialize({
+      startOnLoad: false,
+      // 'base' rather than 'default'/'dark': it is the only theme that honours
+      // themeVariables, which is what keeps the diagrams in the page's palette
+      // instead of mermaid's stock lavender.
+      theme: 'base',
+      securityLevel: 'strict',
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+      themeVariables: {
+        darkMode: dark,
+        fontSize: '14px',
+
+        background:         dark ? '#151b23' : '#f6f7f9',
+        mainBkg:            dark ? '#1c232c' : '#ffffff',
+        primaryColor:       dark ? '#1c232c' : '#ffffff',
+        primaryTextColor:   dark ? '#e4e8ee' : '#1c2128',
+        primaryBorderColor: dark ? '#3d4754' : '#c3ccd8',
+
+        secondaryColor:     dark ? '#1a2740' : '#eaf0fb',
+        secondaryTextColor: dark ? '#e4e8ee' : '#1c2128',
+        secondaryBorderColor: dark ? '#33507f' : '#b9cbec',
+
+        tertiaryColor:      dark ? '#12181f' : '#f0f2f6',
+        tertiaryTextColor:  dark ? '#99a3b0' : '#59636e',
+        tertiaryBorderColor: dark ? '#2f3742' : '#dde2e9',
+
+        lineColor:          dark ? '#7d8896' : '#8b939f',
+        textColor:          dark ? '#e4e8ee' : '#1c2128',
+
+        // sequence diagrams
+        actorBkg:           dark ? '#1c232c' : '#ffffff',
+        actorBorder:        dark ? '#3d4754' : '#c3ccd8',
+        actorTextColor:     dark ? '#e4e8ee' : '#1c2128',
+        signalColor:        dark ? '#99a3b0' : '#59636e',
+        signalTextColor:    dark ? '#e4e8ee' : '#1c2128',
+        labelBoxBkgColor:   dark ? '#1a2740' : '#eaf0fb',
+        labelBoxBorderColor: dark ? '#33507f' : '#b9cbec',
+        labelTextColor:     dark ? '#e4e8ee' : '#1c2128',
+        noteBkgColor:       dark ? '#1a2740' : '#eaf0fb',
+        noteBorderColor:    dark ? '#33507f' : '#b9cbec',
+        noteTextColor:      dark ? '#e4e8ee' : '#1c2128',
+        // The autonumber badge is filled with lineColor, so the digit has to
+        // contrast against that rather than against the page.
+        sequenceNumberColor: dark ? '#151b23' : '#ffffff',
+      },
+      flowchart: { curve: 'basis', padding: 14, useMaxWidth: true },
+      sequence: { useMaxWidth: true, wrap: true, width: 160 },
+      er: { useMaxWidth: true },
+    });
+
+    await mermaid.run({ nodes: blocks });
+  }
+
+  render();
+  darkQuery.addEventListener('change', render);
+</script>
+
+</body>
+</html>
